@@ -5,11 +5,14 @@ description = "Build an analysis-ready CSV from Caleb's Strava running history"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "bigdatacloud>=1.1.0",
     "fitdecode>=0.11.0",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]
 running-build = "running.build:main"
+running-sync = "running.sync:main"
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]

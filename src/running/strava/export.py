@@ -1,4 +1,4 @@
-"""Parse running metadata and GPS endpoints from a Strava account export."""
+"""Parse running metadata and GPS tracks from a Strava account export."""
 
 from __future__ import annotations
 
@@ -8,16 +8,19 @@ import math
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
 import fitdecode
 
-METERS_PER_MILE = 1609.344
-FEET_PER_METER = 3.280839895013123
+from running.normalize import (
+    Run,
+    is_running_activity,
+    normalize_run,
+)
+
 FIT_SEMICIRCLE_TO_DEGREES = 180.0 / 2**31
 
 
@@ -33,51 +36,6 @@ class TrackParseError(StravaExportError):
 class GPSPoint:
     latitude: float
     longitude: float
-
-
-@dataclass(frozen=True)
-class Run:
-    activity_id: int
-    start_datetime: datetime
-    name: str
-    activity_type: str
-    distance_m: float
-    moving_time_s: int
-    elapsed_time_s: int
-    elevation_gain_m: float | None
-    max_speed_mps: float | None
-    average_heart_rate_bpm: float | None
-    max_heart_rate_bpm: float | None
-    calories: float | None
-    start_lat: float | None
-    start_lon: float | None
-    end_lat: float | None
-    end_lon: float | None
-    source_activity_file: str | None
-
-
-def meters_to_miles(distance_m: float) -> float:
-    return distance_m / METERS_PER_MILE
-
-
-def pace_minutes_per_mile(
-    moving_time_s: float | None, distance_m: float | None
-) -> float | None:
-    if moving_time_s is None or distance_m is None:
-        return None
-    if moving_time_s < 0 or distance_m <= 0:
-        return None
-    return float(moving_time_s) / 60 / meters_to_miles(distance_m)
-
-
-def distance_flags(distance_m: float) -> dict[str, bool]:
-    return {
-        "is_5k_distance": distance_m >= 5_000,
-        "is_10k_distance": distance_m >= 10_000,
-        "is_half_marathon_distance": distance_m >= 21_097.5,
-        "is_marathon_distance": distance_m >= 42_195,
-        "is_ultra_distance": distance_m > 42_195,
-    }
 
 
 def discover_export(search_root: Path) -> Path:
@@ -201,15 +159,6 @@ def _safe_track_path(export_directory: Path, filename: str, row_number: int) -> 
     return candidate
 
 
-def _source_path(path: Path, repository_root: Path | None) -> str:
-    if repository_root is not None:
-        try:
-            return path.resolve().relative_to(repository_root.resolve()).as_posix()
-        except ValueError:
-            pass
-    return path.as_posix()
-
-
 def _check_duplicate_semantics(
     row: dict[str, str], header: list[str], row_number: int
 ) -> None:
@@ -259,7 +208,6 @@ def load_runs(
         raise StravaExportError(f"could not read {csv_path}: {error}") from error
 
     runs: list[Run] = []
-    track_jobs: list[tuple[int, Path]] = []
     with stream:
         reader = csv.reader(stream)
         try:
@@ -271,7 +219,7 @@ def load_runs(
         rows = csv.DictReader(stream, fieldnames=header)
 
         for row_number, row in enumerate(rows, start=2):
-            if row.get("Activity Type") != "Run":
+            if not is_running_activity(row.get("Activity Type"), row.get("Type")):
                 continue
             _check_duplicate_semantics(row, header, row_number)
             raw_id = _optional_text(row.get("Activity ID"))
@@ -308,10 +256,10 @@ def load_runs(
                 elapsed_value = row.get("Elapsed Time")
 
             filename = _optional_text(row.get("Filename"))
-            source_activity_file = None
             if filename is not None:
-                track_path = _safe_track_path(export_directory, filename, row_number)
-                source_activity_file = _source_path(track_path, repository_root)
+                # Historical GPS remains in the ignored export. Validate the
+                # reference without copying precise coordinates into public data.
+                _safe_track_path(export_directory, filename, row_number)
 
             max_hr = _optional_float(
                 row.get(max_hr_column), field=max_hr_column, row_number=row_number
@@ -323,15 +271,13 @@ def load_runs(
                     row_number=row_number,
                 )
 
-            run_index = len(runs)
             runs.append(
-                Run(
+                normalize_run(
                     activity_id=activity_id,
                     start_datetime=_parse_datetime(
                         row.get("Activity Date"), row_number
                     ),
                     name=row.get("Activity Name", ""),
-                    activity_type="Run",
                     distance_m=distance_m,
                     moving_time_s=_whole_seconds(
                         row.get("Moving Time"),
@@ -362,32 +308,8 @@ def load_runs(
                     calories=_optional_float(
                         row.get("Calories"), field="Calories", row_number=row_number
                     ),
-                    start_lat=None,
-                    start_lon=None,
-                    end_lat=None,
-                    end_lon=None,
-                    source_activity_file=source_activity_file,
+                    source=f"activities.csv row {row_number}",
                 )
-            )
-            if filename is not None:
-                track_jobs.append((run_index, track_path))
-
-    if track_jobs:
-        paths = [path for _, path in track_jobs]
-        if len(paths) == 1:
-            endpoints = [load_track_endpoints(paths[0])]
-        else:
-            with ProcessPoolExecutor(max_workers=min(4, len(paths))) as executor:
-                endpoints = list(executor.map(load_track_endpoints, paths, chunksize=8))
-        for (run_index, _), (start_point, end_point) in zip(
-            track_jobs, endpoints, strict=True
-        ):
-            runs[run_index] = replace(
-                runs[run_index],
-                start_lat=start_point.latitude if start_point else None,
-                start_lon=start_point.longitude if start_point else None,
-                end_lat=end_point.latitude if end_point else None,
-                end_lon=end_point.longitude if end_point else None,
             )
 
     duplicate_ids = sorted(
@@ -503,18 +425,12 @@ def load_track_endpoints(path: Path) -> tuple[GPSPoint | None, GPSPoint | None]:
 
 
 __all__ = [
-    "FEET_PER_METER",
     "FIT_SEMICIRCLE_TO_DEGREES",
-    "METERS_PER_MILE",
     "GPSPoint",
-    "Run",
     "StravaExportError",
     "TrackParseError",
     "discover_export",
-    "distance_flags",
     "load_runs",
     "load_track",
     "load_track_endpoints",
-    "meters_to_miles",
-    "pace_minutes_per_mile",
 ]

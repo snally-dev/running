@@ -11,6 +11,7 @@ from running.strava import (
     StravaExportError,
     distance_flags,
     load_runs,
+    load_track_endpoints,
     meters_to_miles,
     pace_minutes_per_mile,
 )
@@ -32,6 +33,7 @@ HEADER = [
     "Max Heart Rate",
     "Average Heart Rate",
     "Calories",
+    "Type",
 ]
 
 
@@ -42,6 +44,7 @@ def _row(
     date: str = "Jan 02, 2024, 03:04:05 PM",
     filename: str = "",
     distance_m: str = "5000",
+    sport_type: str = "",
 ) -> list[str]:
     return [
         str(activity_id),
@@ -60,6 +63,7 @@ def _row(
         "180.0",
         "150.0",
         "400.0",
+        sport_type,
     ]
 
 
@@ -76,9 +80,14 @@ def _export(tmp_path: Path, rows: list[list[str]]) -> Path:
 def test_filters_to_strava_runs(tmp_path: Path) -> None:
     export = _export(
         tmp_path,
-        [_row(1), _row(2, activity_type="Ride"), _row(3, activity_type="Hike")],
+        [
+            _row(1),
+            _row(2, activity_type="Ride"),
+            _row(3, activity_type="Hike"),
+            _row(4, sport_type="TrailRun"),
+        ],
     )
-    assert [run.activity_id for run in load_runs(export)] == [1]
+    assert [run.activity_id for run in load_runs(export)] == [1, 4]
 
 
 def test_meter_to_mile_conversion() -> None:
@@ -140,12 +149,6 @@ def test_missing_optional_values_are_preserved(tmp_path: Path) -> None:
     assert run.average_heart_rate_bpm is None
     assert run.max_heart_rate_bpm is None
     assert run.calories is None
-    assert (run.start_lat, run.start_lon, run.end_lat, run.end_lon) == (
-        None,
-        None,
-        None,
-        None,
-    )
 
 
 def test_gpx_endpoints_are_loaded(tmp_path: Path) -> None:
@@ -157,6 +160,6 @@ def test_gpx_endpoints_are_loaded(tmp_path: Path) -> None:
             b'<gpx><trk><trkseg><trkpt lat="38.1" lon="-77.1"/>'
             b'<trkpt lat="38.2" lon="-77.2"/></trkseg></trk></gpx>'
         )
-    run = load_runs(export)[0]
-    assert (run.start_lat, run.start_lon) == (38.1, -77.1)
-    assert (run.end_lat, run.end_lon) == (38.2, -77.2)
+    start, end = load_track_endpoints(track)
+    assert start is not None and (start.latitude, start.longitude) == (38.1, -77.1)
+    assert end is not None and (end.latitude, end.longitude) == (38.2, -77.2)

@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from running.build import run_to_record, validate_records
-from running.strava import Run
+from running.build import validate_records
+from running.normalize import Run, run_to_record
 
 
 def _run(**changes: object) -> Run:
@@ -22,11 +22,6 @@ def _run(**changes: object) -> Run:
         "average_heart_rate_bpm": None,
         "max_heart_rate_bpm": None,
         "calories": None,
-        "start_lat": None,
-        "start_lon": None,
-        "end_lat": None,
-        "end_lon": None,
-        "source_activity_file": None,
     }
     values.update(changes)
     return Run(**values)  # type: ignore[arg-type]

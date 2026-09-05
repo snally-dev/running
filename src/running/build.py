@@ -8,15 +8,15 @@ import math
 from collections.abc import Iterable
 from pathlib import Path
 
-from running.strava import (
-    FEET_PER_METER,
+from running.normalize import (
     Run,
-    discover_export,
     distance_flags,
-    load_runs,
     meters_to_miles,
-    pace_minutes_per_mile,
+    record_to_run,
+    run_to_record,
+    validate_runs,
 )
+from running.strava.export import discover_export, load_runs
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RAW_ROOT = PROJECT_ROOT / "data/raw/strava"
@@ -40,61 +40,12 @@ CSV_COLUMNS = (
     "average_heart_rate_bpm",
     "max_heart_rate_bpm",
     "calories",
-    "start_lat",
-    "start_lon",
-    "end_lat",
-    "end_lon",
     "is_5k_distance",
     "is_10k_distance",
     "is_half_marathon_distance",
     "is_marathon_distance",
     "is_ultra_distance",
-    "source_activity_file",
 )
-
-
-def _rounded(value: float | None, digits: int) -> float | None:
-    return None if value is None else round(value, digits)
-
-
-def run_to_record(run: Run) -> dict[str, object]:
-    distance_mi = meters_to_miles(run.distance_m)
-    average_speed = (
-        run.distance_m / run.moving_time_s if run.moving_time_s > 0 else None
-    )
-    elevation_gain_ft = (
-        run.elevation_gain_m * FEET_PER_METER
-        if run.elevation_gain_m is not None
-        else None
-    )
-    timestamp = run.start_datetime.isoformat(timespec="seconds").replace("+00:00", "Z")
-    return {
-        "activity_id": run.activity_id,
-        "date": run.start_datetime.date().isoformat(),
-        "start_datetime": timestamp,
-        "name": run.name,
-        "activity_type": run.activity_type,
-        "distance_m": _rounded(run.distance_m, 1),
-        "distance_mi": _rounded(distance_mi, 6),
-        "moving_time_s": run.moving_time_s,
-        "elapsed_time_s": run.elapsed_time_s,
-        "elevation_gain_m": _rounded(run.elevation_gain_m, 1),
-        "elevation_gain_ft": _rounded(elevation_gain_ft, 3),
-        "average_speed_mps": _rounded(average_speed, 6),
-        "average_pace_min_mi": _rounded(
-            pace_minutes_per_mile(run.moving_time_s, run.distance_m), 6
-        ),
-        "max_speed_mps": _rounded(run.max_speed_mps, 6),
-        "average_heart_rate_bpm": _rounded(run.average_heart_rate_bpm, 1),
-        "max_heart_rate_bpm": _rounded(run.max_heart_rate_bpm, 1),
-        "calories": _rounded(run.calories, 1),
-        "start_lat": _rounded(run.start_lat, 7),
-        "start_lon": _rounded(run.start_lon, 7),
-        "end_lat": _rounded(run.end_lat, 7),
-        "end_lon": _rounded(run.end_lon, 7),
-        **distance_flags(run.distance_m),
-        "source_activity_file": run.source_activity_file,
-    }
 
 
 def validate_records(records: Iterable[dict[str, object]]) -> None:
@@ -111,15 +62,6 @@ def validate_records(records: Iterable[dict[str, object]]) -> None:
             value = record[field]
             if value is not None and float(value) < 0:
                 raise ValueError(f"{label}: {field} must be non-negative")
-        for field in ("start_lat", "end_lat"):
-            value = record[field]
-            if value is not None and not -90 <= float(value) <= 90:
-                raise ValueError(f"{label}: {field} is outside [-90, 90]")
-        for field in ("start_lon", "end_lon"):
-            value = record[field]
-            if value is not None and not -180 <= float(value) <= 180:
-                raise ValueError(f"{label}: {field} is outside [-180, 180]")
-
         expected_miles = meters_to_miles(float(record["distance_m"]))
         if not math.isclose(float(record["distance_mi"]), expected_miles, abs_tol=1e-6):
             raise ValueError(f"{label}: distance_mi does not match distance_m")
@@ -165,18 +107,42 @@ def _csv_text(records: list[dict[str, object]]) -> str:
     return stream.getvalue()
 
 
-def build(
-    export_directory: Path | None = None, *, output_path: Path = OUTPUT_PATH
+def load_public_runs(path: Path = OUTPUT_PATH) -> list[Run]:
+    """Load the canonical values from an existing public CSV."""
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        missing = set(CSV_COLUMNS) - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                "public CSV is missing columns: " + ", ".join(sorted(missing))
+            )
+        runs = [record_to_run(record) for record in reader]
+    return validate_runs(runs)
+
+
+def write_runs(
+    runs: Iterable[Run], *, output_path: Path = OUTPUT_PATH
 ) -> tuple[Path, list[dict[str, object]]]:
-    export_directory = export_directory or discover_export(RAW_ROOT)
-    runs = load_runs(export_directory, repository_root=PROJECT_ROOT)
-    records = [run_to_record(run) for run in runs]
+    """Validate and deterministically render canonical runs."""
+    ordered = sorted(runs, key=lambda run: (run.start_datetime, run.activity_id))
+    validate_runs(ordered)
+    records = [run_to_record(run) for run in ordered]
     validate_records(records)
     text = _csv_text(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not output_path.exists() or output_path.read_text(encoding="utf-8") != text:
         output_path.write_text(text, encoding="utf-8")
     return output_path, records
+
+
+def build(
+    export_directory: Path | None = None, *, output_path: Path = OUTPUT_PATH
+) -> tuple[Path, list[dict[str, object]]]:
+    export_directory = export_directory or discover_export(RAW_ROOT)
+    runs = load_runs(export_directory, repository_root=PROJECT_ROOT)
+    return write_runs(runs, output_path=output_path)
 
 
 def main() -> None:

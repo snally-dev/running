@@ -149,6 +149,7 @@ activemq-data/
 
 # Environments
 .env
+.env.*
 .envrc
 .venv
 env/
@@ -209,6 +210,11 @@ tempCodeRunnerFile.py
 # Private Strava source export. Keep the derived public CSV under version control.
 data/raw/*
 !data/raw/.gitkeep
+
+# Private API streams and rotating OAuth token state.
+data/private/
+.strava-token*.json
+strava-token*.json
 
 # PyPI configuration file
 .pypirc

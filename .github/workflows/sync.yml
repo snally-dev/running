@@ -1,0 +1,38 @@
+name: Sync running data
+
+on:
+  workflow_dispatch:
+  # Do not enable until rotated refresh tokens have durable secret persistence.
+  # schedule:
+  #   - cron: "17 8 * * 0"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    # Keep even manual runs inert until durable token persistence is integrated.
+    if: ${{ vars.STRAVA_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+      STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+      STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+      - run: uv python install 3.11
+      - run: uv sync --locked
+      - run: uv run python -m running.sync
+      - run: uv run pytest
+      - run: uv run ruff check .
+      - name: Commit meaningful public-data changes
+        run: |
+          git add data/public/runs.csv
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update running data"
+          git push
