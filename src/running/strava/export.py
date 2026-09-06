@@ -8,7 +8,8 @@ import math
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -208,6 +209,7 @@ def load_runs(
         raise StravaExportError(f"could not read {csv_path}: {error}") from error
 
     runs: list[Run] = []
+    track_jobs: list[tuple[int, Path]] = []
     with stream:
         reader = csv.reader(stream)
         try:
@@ -257,9 +259,7 @@ def load_runs(
 
             filename = _optional_text(row.get("Filename"))
             if filename is not None:
-                # Historical GPS remains in the ignored export. Validate the
-                # reference without copying precise coordinates into public data.
-                _safe_track_path(export_directory, filename, row_number)
+                track_path = _safe_track_path(export_directory, filename, row_number)
 
             max_hr = _optional_float(
                 row.get(max_hr_column), field=max_hr_column, row_number=row_number
@@ -271,6 +271,7 @@ def load_runs(
                     row_number=row_number,
                 )
 
+            run_index = len(runs)
             runs.append(
                 normalize_run(
                     activity_id=activity_id,
@@ -310,6 +311,26 @@ def load_runs(
                     ),
                     source=f"activities.csv row {row_number}",
                 )
+            )
+            if filename is not None:
+                track_jobs.append((run_index, track_path))
+
+    if track_jobs:
+        paths = [path for _, path in track_jobs]
+        if len(paths) == 1:
+            endpoints = [load_track_endpoints(paths[0])]
+        else:
+            with ProcessPoolExecutor(max_workers=min(4, len(paths))) as executor:
+                endpoints = list(executor.map(load_track_endpoints, paths, chunksize=8))
+        for (run_index, _), (start_point, end_point) in zip(
+            track_jobs, endpoints, strict=True
+        ):
+            runs[run_index] = replace(
+                runs[run_index],
+                start_lat=start_point.latitude if start_point else None,
+                start_lon=start_point.longitude if start_point else None,
+                end_lat=end_point.latitude if end_point else None,
+                end_lon=end_point.longitude if end_point else None,
             )
 
     duplicate_ids = sorted(
