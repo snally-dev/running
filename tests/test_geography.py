@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,7 +24,6 @@ def _run(**changes: object) -> Run:
         "activity_id": 1,
         "start_datetime": datetime(2024, 1, 2, tzinfo=UTC),
         "name": "Morning Run",
-        "activity_type": "Run",
         "distance_m": 5000.0,
         "moving_time_s": 1500,
         "elapsed_time_s": 1600,
@@ -74,11 +74,28 @@ def test_successful_city_state_and_country_mapping() -> None:
             "city": "Frederick",
             "locality": "Downtown",
             "principalSubdivision": "Maryland",
+            "principalSubdivisionCode": "US-MD",
             "countryName": "United States",
             "countryCode": "us",
+            "continent": "North America",
+            "continentCode": "NA",
+            "postcode": "21701",
+            "localityInfo": {
+                "informative": [
+                    {"name": "America/New_York", "description": "time zone"}
+                ]
+            },
         }
     )
-    assert location == Location("Frederick", "Maryland", "United States", "US")
+    assert location.city == "Frederick"
+    assert location.locality == "Downtown"
+    assert location.postcode == "21701"
+    assert location.state == "Maryland"
+    assert location.state_code == "US-MD"
+    assert location.country_code == "US"
+    assert location.continent_code == "NA"
+    assert location.timezone == "America/New_York"
+    assert location.provider_payload is not None
 
 
 def test_locality_is_used_only_when_city_is_missing() -> None:
@@ -90,6 +107,23 @@ def test_locality_is_used_only_when_city_is_missing() -> None:
         }
     )
     assert location.city == "Ballenger Creek"
+
+
+def test_compact_response_aliases_are_supported() -> None:
+    location = parse_bigdatacloud_response(
+        {
+            "city": "Walkersville",
+            "locality": "Walkersville",
+            "region": "Maryland",
+            "country": "United States of America",
+            "countryCode": "US",
+            "postcode": "21793",
+            "continent": "North America",
+        }
+    )
+    assert location.state == "Maryland"
+    assert location.country == "United States of America"
+    assert location.postcode == "21793"
 
 
 def test_missing_city_and_locality_remain_empty() -> None:
@@ -135,6 +169,42 @@ def test_cache_miss_performs_one_api_request(tmp_path: Path) -> None:
     assert runs[0].start_state == "Maryland"
     assert stats.api_requests == 1
     assert geocoder.calls == [(38.1234564, -77.1234564)]
+
+
+def test_cached_metadata_can_be_refreshed(tmp_path: Path) -> None:
+    path = tmp_path / "cache.csv"
+    _cache(path)
+    location = Location(
+        "Frederick",
+        "Maryland",
+        "United States",
+        "US",
+        locality="Downtown",
+        postcode="21701",
+        state_code="US-MD",
+        continent="North America",
+        continent_code="NA",
+        timezone="America/New_York",
+    )
+    geocoder = FakeGeocoder(location)
+
+    runs, stats = enrich_runs(
+        [_run(start_lat=None, start_lon=None)],
+        cache_path=path,
+        api_key=None,
+        geocoder=geocoder,  # type: ignore[arg-type]
+        refresh_cached_metadata=True,
+    )
+
+    assert geocoder.calls == [(38.123456, -77.123456)]
+    assert stats.api_requests == 1
+    assert runs[0].start_locality == "Downtown"
+    assert runs[0].start_state_code == "US-MD"
+    assert runs[0].timezone == "America/New_York"
+    cached = GeocodingCache(path).entry(1)
+    assert cached is not None
+    assert cached.location.postcode == "21701"
+    assert cached.location.continent_code == "NA"
 
 
 def test_same_coordinates_are_geocoded_only_once(tmp_path: Path) -> None:
@@ -206,6 +276,29 @@ def test_coordinate_rounding_allows_equivalent_cache_hit(tmp_path: Path) -> None
     assert stats.cache_hits == 1
 
 
+def test_provider_payload_is_retained_in_private_cache(tmp_path: Path) -> None:
+    payload = {
+        "city": "Frederick",
+        "postcode": "21701",
+        "plusCode": "example-private-value",
+    }
+    path = tmp_path / "cache.csv"
+    cache = GeocodingCache(path)
+    cache.update(
+        1,
+        38.1234564,
+        -77.1234564,
+        parse_bigdatacloud_response(payload),
+        geocoded_at="2024-01-01T00:00:00Z",
+    )
+    cache.save()
+
+    entry = GeocodingCache(path).entry(1)
+    assert entry is not None
+    assert entry.location.provider_payload == payload
+    assert "example-private-value" in path.read_text(encoding="utf-8")
+
+
 def test_missing_key_with_complete_cache_succeeds(tmp_path: Path) -> None:
     path = tmp_path / "cache.csv"
     _cache(path)
@@ -274,6 +367,11 @@ def test_public_csv_is_deterministic_and_contains_no_secrets_or_coordinates(
     write_runs([run], output_path=second)
     text = first.read_text(encoding="utf-8")
     assert first.read_bytes() == second.read_bytes()
-    assert "Frederick,Maryland,United States,US" in text
+    with first.open(encoding="utf-8", newline="") as stream:
+        record = next(csv.DictReader(stream))
+    assert record["start_city"] == "Frederick"
+    assert record["start_state"] == "Maryland"
+    assert record["start_country"] == "United States"
+    assert record["start_country_code"] == "US"
     assert "38.1234564" not in text
     assert "test-api-key" not in text

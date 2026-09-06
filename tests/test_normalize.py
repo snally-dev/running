@@ -5,8 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from running.normalize import (
+    is_indoor_run,
     is_running_activity,
     normalize_run,
+    run_to_record,
 )
 
 
@@ -27,6 +29,23 @@ def test_legacy_type_is_used_only_without_sport_type() -> None:
     assert not is_running_activity("Hike")
 
 
+@pytest.mark.parametrize(
+    ("name", "sport_type"),
+    [
+        ("Morning Run", "VirtualRun"),
+        ("Treadmill intervals", "Run"),
+        ("Indoor Track", "Run"),
+        ("Zwift Run", None),
+    ],
+)
+def test_indoor_runs_are_identified(name: str, sport_type: str | None) -> None:
+    assert is_indoor_run(name, sport_type)
+
+
+def test_virtual_race_name_alone_is_not_indoor() -> None:
+    assert not is_indoor_run("Virtual 10K", "Run")
+
+
 def test_export_values_are_normalized() -> None:
     run = normalize_run(
         activity_id="123",
@@ -37,8 +56,14 @@ def test_export_values_are_normalized() -> None:
         elapsed_time_s="1600",
         elevation_gain_m="12.3",
         max_speed_mps="4.2",
+        sport_type="TrailRun",
+        timezone="America/New_York",
         source="export row",
     )
     assert run.activity_id == 123
     assert run.distance_m == 5000
     assert run.moving_time_s == 1500
+    assert run.sport_type == "TrailRun"
+    record = run_to_record(run)
+    assert record["local_date"] == "2024-01-01"
+    assert record["local_start_datetime"] == "2024-01-01T19:00:00-05:00"

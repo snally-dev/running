@@ -8,7 +8,6 @@ import pytest
 
 from running.strava import (
     METERS_PER_MILE,
-    distance_flags,
     load_runs,
     load_track_endpoints,
     meters_to_miles,
@@ -43,12 +42,13 @@ def _row(
     date: str = "Jan 02, 2024, 03:04:05 PM",
     filename: str = "",
     distance_m: str = "5000",
+    name: str | None = None,
     sport_type: str = "",
 ) -> list[str]:
     return [
         str(activity_id),
         date,
-        f"Activity {activity_id}",
+        name or f"Activity {activity_id}",
         activity_type,
         filename,
         "1800",
@@ -84,9 +84,12 @@ def test_filters_to_strava_runs(tmp_path: Path) -> None:
             _row(2, activity_type="Ride"),
             _row(3, activity_type="Hike"),
             _row(4, sport_type="TrailRun"),
+            _row(5, sport_type="VirtualRun"),
+            _row(6, name="Treadmill intervals"),
         ],
     )
     assert [run.activity_id for run in load_runs(export)] == [1, 4]
+    assert load_runs(export)[1].sport_type == "TrailRun"
 
 
 def test_meter_to_mile_conversion() -> None:
@@ -97,21 +100,6 @@ def test_pace_uses_moving_time_and_distance() -> None:
     assert pace_minutes_per_mile(510, METERS_PER_MILE) == pytest.approx(8.5)
     assert pace_minutes_per_mile(510, 0) is None
     assert pace_minutes_per_mile(None, METERS_PER_MILE) is None
-
-
-@pytest.mark.parametrize(
-    ("distance_m", "expected"),
-    [
-        (4_999.9, (False, False, False, False, False)),
-        (5_000, (True, False, False, False, False)),
-        (10_000, (True, True, False, False, False)),
-        (21_097.5, (True, True, True, False, False)),
-        (42_195, (True, True, True, True, False)),
-        (42_195.1, (True, True, True, True, True)),
-    ],
-)
-def test_distance_thresholds(distance_m: float, expected: tuple[bool, ...]) -> None:
-    assert tuple(distance_flags(distance_m).values()) == expected
 
 
 def test_runs_are_deterministically_ordered(tmp_path: Path) -> None:

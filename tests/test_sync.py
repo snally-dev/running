@@ -37,6 +37,7 @@ def _row(
     name: str | None = None,
     activity_type: str = "Run",
     calories: str = "400",
+    sport_type: str = "",
 ) -> list[str]:
     return [
         str(activity_id),
@@ -52,7 +53,7 @@ def _row(
         "180",
         "150",
         calories,
-        "",
+        sport_type,
     ]
 
 
@@ -78,7 +79,6 @@ def _run(**changes: object) -> Run:
         "activity_id": 1,
         "start_datetime": datetime(2024, 1, 2, 15, 4, 5, tzinfo=UTC),
         "name": "Existing name",
-        "activity_type": "Run",
         "distance_m": 5000.0,
         "moving_time_s": 1700,
         "elapsed_time_s": 1800,
@@ -139,6 +139,22 @@ def test_existing_rows_and_omitted_values_are_preserved(tmp_path: Path) -> None:
     assert result.existing_preserved == 1
 
 
+def test_indoor_run_in_export_removes_existing_row(tmp_path: Path) -> None:
+    archive = _archive(
+        tmp_path / "export.zip",
+        [_row(1, sport_type="VirtualRun"), _row(2, name="Treadmill")],
+    )
+
+    runs, result = synchronize(
+        archive_paths=[archive],
+        existing=[_run(), _run(activity_id=2, name="Previously generic")],
+    )
+
+    assert runs == []
+    assert result.indoor_excluded == 2
+    assert result.existing_preserved == 0
+
+
 def test_repeated_processing_is_idempotent(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     output = tmp_path / "runs.csv"
@@ -172,6 +188,14 @@ def test_no_archives_preserves_existing_csv(tmp_path: Path) -> None:
     assert result.archives_found == 0
     assert result.existing_preserved == result.total == 1
     assert geocoding.api_requests == 0
+
+
+def test_no_archives_removes_named_indoor_run(tmp_path: Path) -> None:
+    runs, result = synchronize([], [_run(name="Indoor track run")])
+
+    assert runs == []
+    assert result.indoor_excluded == 1
+    assert result.existing_preserved == 0
 
 
 @pytest.mark.parametrize("contents", [b"not a zip", b""])

@@ -13,7 +13,6 @@ def _run(**changes: object) -> Run:
         "activity_id": 1,
         "start_datetime": datetime(2024, 1, 2, tzinfo=UTC),
         "name": "Morning Run",
-        "activity_type": "Run",
         "distance_m": 5000.0,
         "moving_time_s": 1500,
         "elapsed_time_s": 1600,
@@ -27,12 +26,18 @@ def _run(**changes: object) -> Run:
     return Run(**values)  # type: ignore[arg-type]
 
 
-def test_run_record_has_derived_values_and_empty_optionals() -> None:
+def test_run_record_contains_canonical_values_only() -> None:
     record = run_to_record(_run())
-    assert record["distance_mi"] == pytest.approx(3.106856)
-    assert record["average_pace_min_mi"] == pytest.approx(8.04672)
-    assert record["is_5k_distance"] is True
-    assert record["elevation_gain_ft"] is None
+    assert record["distance_m"] == 5000
+    assert record["sport_type"] == "Run"
+    for redundant in (
+        "activity_type",
+        "distance_mi",
+        "average_pace_min_mi",
+        "is_5k_distance",
+        "elevation_gain_ft",
+    ):
+        assert redundant not in record
 
 
 def test_validation_rejects_duplicate_ids() -> None:
@@ -41,8 +46,8 @@ def test_validation_rejects_duplicate_ids() -> None:
         validate_records([record, record.copy()])
 
 
-def test_validation_rejects_incorrect_distance_flags() -> None:
+def test_validation_rejects_non_running_sport_type() -> None:
     record = run_to_record(_run())
-    record["is_10k_distance"] = True
-    with pytest.raises(ValueError, match="distance flags do not match distance_m"):
+    record["sport_type"] = "Ride"
+    with pytest.raises(ValueError, match="non-running sport type"):
         validate_records([record])
