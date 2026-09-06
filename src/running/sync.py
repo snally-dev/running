@@ -6,12 +6,13 @@ import argparse
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from running.build import OUTPUT_PATH, PROJECT_ROOT, load_public_runs, write_runs
+from running.geography import GeocodingError, enrich_runs
 from running.normalize import (
     Run,
     is_running_activity,
@@ -30,6 +31,7 @@ DEFAULT_LOOKBACK_DAYS = 30
 PRIVATE_ROOT = PROJECT_ROOT / "data/private"
 STREAM_ROOT = PRIVATE_ROOT / "streams"
 DEFAULT_TOKEN_PATH = PRIVATE_ROOT / "strava-token.json"
+GEOCODING_CACHE_PATH = PRIVATE_ROOT / "geocoding.csv"
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,39 @@ def _write_stream(path: Path, payload: Any) -> None:
         raise
 
 
+def _stream_endpoints(
+    path: Path,
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    stream = payload.get("latlng") if isinstance(payload, dict) else None
+    if stream is None and isinstance(payload, list):
+        stream = next(
+            (
+                item
+                for item in payload
+                if isinstance(item, dict) and item.get("type") == "latlng"
+            ),
+            None,
+        )
+    data = stream.get("data") if isinstance(stream, dict) else None
+    if not isinstance(data, list):
+        return None, None
+    points: list[tuple[float, float]] = []
+    for value in data:
+        if not isinstance(value, list) or len(value) != 2:
+            continue
+        try:
+            latitude, longitude = float(value[0]), float(value[1])
+        except (TypeError, ValueError):
+            continue
+        if -90 <= latitude <= 90 and -180 <= longitude <= 180:
+            points.append((latitude, longitude))
+    return (points[0], points[-1]) if points else (None, None)
+
+
 def synchronize(
     client: StravaClient,
     existing: list[Run],
@@ -83,14 +118,6 @@ def synchronize(
             continue
         run_count += 1
         current = normalize_api_activity(activity)
-        previous = by_id.get(current.activity_id)
-        merged = merge_api_run(previous, current)
-        if previous is None:
-            added += 1
-        elif previous != merged:
-            updated += 1
-        by_id[current.activity_id] = merged
-
         stream_path = stream_root / f"{current.activity_id}.json"
         if (
             fetch_streams
@@ -99,6 +126,25 @@ def synchronize(
         ):
             _write_stream(stream_path, client.get_activity_streams(current.activity_id))
             streams_added += 1
+        if stream_path.is_file() and (
+            current.start_lat is None or current.end_lat is None
+        ):
+            start, end = _stream_endpoints(stream_path)
+            current = replace(
+                current,
+                start_lat=(start[0] if start else current.start_lat),
+                start_lon=(start[1] if start else current.start_lon),
+                end_lat=(end[0] if end else current.end_lat),
+                end_lon=(end[1] if end else current.end_lon),
+            )
+
+        previous = by_id.get(current.activity_id)
+        merged = merge_api_run(previous, current)
+        if previous is None:
+            added += 1
+        elif previous != merged:
+            updated += 1
+        by_id[current.activity_id] = merged
 
     runs = sorted(by_id.values(), key=lambda run: (run.start_datetime, run.activity_id))
     return runs, SyncResult(
@@ -173,8 +219,13 @@ def main() -> None:
             before=before,
             fetch_streams=not args.no_streams,
         )
+        runs, geocoding = enrich_runs(
+            runs,
+            cache_path=GEOCODING_CACHE_PATH,
+            api_key=os.environ.get("BIGDATACLOUD_API_KEY"),
+        )
         output_path, _ = write_runs(runs, output_path=OUTPUT_PATH)
-    except (StravaAuthError, StravaAPIError, ValueError) as error:
+    except (GeocodingError, StravaAuthError, StravaAPIError, ValueError) as error:
         parser.exit(2, f"running.sync: {error}\n")
 
     print(
@@ -185,6 +236,11 @@ def main() -> None:
     print(f"Authentication succeeded; OAuth scopes: {scope_summary}")
     print(f"Access token refreshed: {'yes' if provider.refreshed else 'no'}")
     print(f"Stored {result.streams_added} new private stream files")
+    print(
+        f"Geocoding: {geocoding.cache_hits} cache hits, "
+        f"{geocoding.public_hits} public-data hits, "
+        f"{geocoding.api_requests} API requests"
+    )
     print(f"Wrote {result.total:,} runs to {output_path.relative_to(PROJECT_ROOT)}")
 
 
