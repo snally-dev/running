@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 METERS_PER_MILE = 1609.344
 FEET_PER_METER = 3.280839895013123
 
 # Strava's current SportType values that unambiguously represent running.
 RUNNING_SPORT_TYPES = frozenset({"Run", "TrailRun", "VirtualRun"})
+INDOOR_RUN_NAME_PATTERN = re.compile(
+    r"\b(?:indoor|treadmill|zwift|tm)\b", re.IGNORECASE
+)
 
 
 class NormalizationError(ValueError):
@@ -25,7 +30,6 @@ class Run:
     activity_id: int
     start_datetime: datetime
     name: str
-    activity_type: str
     distance_m: float
     moving_time_s: int
     elapsed_time_s: int
@@ -34,12 +38,16 @@ class Run:
     average_heart_rate_bpm: float | None
     max_heart_rate_bpm: float | None
     calories: float | None
+    sport_type: str = "Run"
+    timezone: str | None = None
     start_lat: float | None = None
     start_lon: float | None = None
     end_lat: float | None = None
     end_lon: float | None = None
     start_city: str | None = None
+    start_locality: str | None = None
     start_state: str | None = None
+    start_state_code: str | None = None
     start_country: str | None = None
     start_country_code: str | None = None
 
@@ -51,6 +59,13 @@ def is_running_activity(
     if isinstance(sport_type, str) and sport_type:
         return sport_type in RUNNING_SPORT_TYPES
     return activity_type == "Run"
+
+
+def is_indoor_run(name: object, sport_type: object | None = None) -> bool:
+    """Identify indoor runs using Strava's type or an explicit activity name."""
+    if sport_type == "VirtualRun":
+        return True
+    return bool(INDOOR_RUN_NAME_PATTERN.search("" if name is None else str(name)))
 
 
 def meters_to_miles(distance_m: float) -> float:
@@ -65,16 +80,6 @@ def pace_minutes_per_mile(
     if moving_time_s < 0 or distance_m <= 0:
         return None
     return float(moving_time_s) / 60 / meters_to_miles(distance_m)
-
-
-def distance_flags(distance_m: float) -> dict[str, bool]:
-    return {
-        "is_5k_distance": distance_m >= 5_000,
-        "is_10k_distance": distance_m >= 10_000,
-        "is_half_marathon_distance": distance_m >= 21_097.5,
-        "is_marathon_distance": distance_m >= 42_195,
-        "is_ultra_distance": distance_m > 42_195,
-    }
 
 
 def _finite_float(value: object, *, field: str, source: str) -> float:
@@ -118,6 +123,17 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _timezone(value: object, *, source: str) -> str | None:
+    name = _optional_text(value)
+    if name is None:
+        return None
+    try:
+        ZoneInfo(name)
+    except ZoneInfoNotFoundError as error:
+        raise NormalizationError(f"{source}: invalid timezone {name!r}") from error
+    return name
+
+
 def _utc_datetime(value: datetime | str, *, field: str, source: str) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -144,12 +160,16 @@ def normalize_run(
     average_heart_rate_bpm: object = None,
     max_heart_rate_bpm: object = None,
     calories: object = None,
+    sport_type: object = None,
+    timezone: object = None,
     start_lat: object = None,
     start_lon: object = None,
     end_lat: object = None,
     end_lon: object = None,
     start_city: object = None,
+    start_locality: object = None,
     start_state: object = None,
+    start_state_code: object = None,
     start_country: object = None,
     start_country_code: object = None,
     source: str,
@@ -186,7 +206,6 @@ def normalize_run(
             start_datetime, field="start datetime", source=source
         ),
         name="" if name is None else str(name),
-        activity_type="Run",
         distance_m=distance,
         moving_time_s=moving,
         elapsed_time_s=elapsed,
@@ -201,12 +220,16 @@ def normalize_run(
             max_heart_rate_bpm, field="max heart rate", source=source
         ),
         calories=_optional_float(calories, field="calories", source=source),
+        sport_type=_optional_text(sport_type) or "Run",
+        timezone=_timezone(timezone, source=source),
         start_lat=normalized_start_lat,
         start_lon=normalized_start_lon,
         end_lat=normalized_end_lat,
         end_lon=normalized_end_lon,
         start_city=_optional_text(start_city),
+        start_locality=_optional_text(start_locality),
         start_state=_optional_text(start_state),
+        start_state_code=_optional_text(start_state_code),
         start_country=_optional_text(start_country),
         start_country_code=_optional_text(start_country_code),
     )
@@ -218,39 +241,34 @@ def _rounded(value: float | None, digits: int) -> float | None:
 
 def run_to_record(run: Run) -> dict[str, object]:
     """Render one canonical run as a deterministic public record."""
-    distance_mi = meters_to_miles(run.distance_m)
-    average_speed = (
-        run.distance_m / run.moving_time_s if run.moving_time_s > 0 else None
-    )
-    elevation_gain_ft = (
-        run.elevation_gain_m * FEET_PER_METER
-        if run.elevation_gain_m is not None
+    timestamp = run.start_datetime.isoformat(timespec="seconds").replace("+00:00", "Z")
+    local_start = (
+        run.start_datetime.astimezone(ZoneInfo(run.timezone))
+        if run.timezone is not None
         else None
     )
-    timestamp = run.start_datetime.isoformat(timespec="seconds").replace("+00:00", "Z")
     return {
         "activity_id": run.activity_id,
-        "date": run.start_datetime.date().isoformat(),
+        "local_date": local_start.date().isoformat() if local_start else None,
         "start_datetime": timestamp,
+        "local_start_datetime": (
+            local_start.isoformat(timespec="seconds") if local_start else None
+        ),
+        "timezone": run.timezone,
         "name": run.name,
-        "activity_type": run.activity_type,
+        "sport_type": run.sport_type,
         "distance_m": _rounded(run.distance_m, 1),
-        "distance_mi": _rounded(distance_mi, 6),
         "moving_time_s": run.moving_time_s,
         "elapsed_time_s": run.elapsed_time_s,
         "elevation_gain_m": _rounded(run.elevation_gain_m, 1),
-        "elevation_gain_ft": _rounded(elevation_gain_ft, 3),
-        "average_speed_mps": _rounded(average_speed, 6),
-        "average_pace_min_mi": _rounded(
-            pace_minutes_per_mile(run.moving_time_s, run.distance_m), 6
-        ),
         "max_speed_mps": _rounded(run.max_speed_mps, 6),
         "average_heart_rate_bpm": _rounded(run.average_heart_rate_bpm, 1),
         "max_heart_rate_bpm": _rounded(run.max_heart_rate_bpm, 1),
         "calories": _rounded(run.calories, 1),
-        **distance_flags(run.distance_m),
         "start_city": run.start_city,
+        "start_locality": run.start_locality,
         "start_state": run.start_state,
+        "start_state_code": run.start_state_code,
         "start_country": run.start_country,
         "start_country_code": run.start_country_code,
     }
@@ -271,8 +289,12 @@ def record_to_run(record: Mapping[str, object]) -> Run:
         average_heart_rate_bpm=record.get("average_heart_rate_bpm"),
         max_heart_rate_bpm=record.get("max_heart_rate_bpm"),
         calories=record.get("calories"),
+        sport_type=record.get("sport_type") or record.get("activity_type"),
+        timezone=record.get("timezone"),
         start_city=record.get("start_city"),
+        start_locality=record.get("start_locality"),
         start_state=record.get("start_state"),
+        start_state_code=record.get("start_state_code"),
         start_country=record.get("start_country"),
         start_country_code=record.get("start_country_code"),
         source=f"public CSV activity {activity_id!r}",
@@ -284,8 +306,8 @@ def validate_runs(runs: Iterable[Run]) -> list[Run]:
     ids = [run.activity_id for run in ordered]
     if len(ids) != len(set(ids)):
         raise ValueError("activity IDs must be unique")
-    if any(run.activity_type != "Run" for run in ordered):
-        raise ValueError("canonical dataset contains a non-running activity")
+    if any(run.sport_type not in RUNNING_SPORT_TYPES for run in ordered):
+        raise ValueError("canonical dataset contains a non-running sport type")
     expected = sorted(ordered, key=lambda run: (run.start_datetime, run.activity_id))
     if ordered != expected:
         raise ValueError("runs must be ordered by start_datetime and activity_id")
@@ -298,7 +320,7 @@ __all__ = [
     "RUNNING_SPORT_TYPES",
     "NormalizationError",
     "Run",
-    "distance_flags",
+    "is_indoor_run",
     "is_running_activity",
     "meters_to_miles",
     "normalize_run",
