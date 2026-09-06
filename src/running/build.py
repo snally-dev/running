@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import csv
 import io
-import math
 from collections.abc import Iterable
 from pathlib import Path
 
 from running.normalize import (
+    RUNNING_SPORT_TYPES,
     Run,
-    distance_flags,
-    meters_to_miles,
     record_to_run,
     run_to_record,
     validate_runs,
@@ -22,29 +20,24 @@ OUTPUT_PATH = PROJECT_ROOT / "data/public/runs.csv"
 
 CSV_COLUMNS = (
     "activity_id",
-    "date",
+    "local_date",
     "start_datetime",
+    "local_start_datetime",
+    "timezone",
     "name",
-    "activity_type",
+    "sport_type",
     "distance_m",
-    "distance_mi",
     "moving_time_s",
     "elapsed_time_s",
     "elevation_gain_m",
-    "elevation_gain_ft",
-    "average_speed_mps",
-    "average_pace_min_mi",
     "max_speed_mps",
     "average_heart_rate_bpm",
     "max_heart_rate_bpm",
     "calories",
-    "is_5k_distance",
-    "is_10k_distance",
-    "is_half_marathon_distance",
-    "is_marathon_distance",
-    "is_ultra_distance",
     "start_city",
+    "start_locality",
     "start_state",
+    "start_state_code",
     "start_country",
     "start_country_code",
 )
@@ -58,31 +51,12 @@ def validate_records(records: Iterable[dict[str, object]]) -> None:
 
     for record in records:
         label = f"activity {record['activity_id']}"
-        if record["activity_type"] != "Run":
-            raise ValueError(f"{label}: non-running activity in output")
+        if record["sport_type"] not in RUNNING_SPORT_TYPES:
+            raise ValueError(f"{label}: non-running sport type in output")
         for field in ("distance_m", "moving_time_s", "elapsed_time_s"):
             value = record[field]
             if value is not None and float(value) < 0:
                 raise ValueError(f"{label}: {field} must be non-negative")
-        expected_miles = meters_to_miles(float(record["distance_m"]))
-        if not math.isclose(float(record["distance_mi"]), expected_miles, abs_tol=1e-6):
-            raise ValueError(f"{label}: distance_mi does not match distance_m")
-
-        flags = {key: bool(record[key]) for key in distance_flags(0)}
-        if flags != distance_flags(float(record["distance_m"])):
-            raise ValueError(f"{label}: distance flags do not match distance_m")
-        if flags["is_half_marathon_distance"] and not (
-            flags["is_10k_distance"] and flags["is_5k_distance"]
-        ):
-            raise ValueError(f"{label}: half-marathon distance flags are inconsistent")
-        if flags["is_marathon_distance"] and not (
-            flags["is_half_marathon_distance"]
-            and flags["is_10k_distance"]
-            and flags["is_5k_distance"]
-        ):
-            raise ValueError(f"{label}: marathon distance flags are inconsistent")
-        if flags["is_ultra_distance"] and not flags["is_marathon_distance"]:
-            raise ValueError(f"{label}: ultra distance flag is inconsistent")
 
     order = [(record["start_datetime"], record["activity_id"]) for record in records]
     if order != sorted(order):
@@ -115,7 +89,17 @@ def load_public_runs(path: Path = OUTPUT_PATH) -> list[Run]:
         return []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
-        missing = set(CSV_COLUMNS) - set(reader.fieldnames or ())
+        # The newer locality/time columns are optional while migrating an older
+        # public CSV; write_runs always emits the complete current schema.
+        migration_columns = {
+            "local_date",
+            "local_start_datetime",
+            "timezone",
+            "sport_type",
+            "start_locality",
+            "start_state_code",
+        }
+        missing = set(CSV_COLUMNS) - migration_columns - set(reader.fieldnames or ())
         if missing:
             raise ValueError(
                 "public CSV is missing columns: " + ", ".join(sorted(missing))
