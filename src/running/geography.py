@@ -211,9 +211,16 @@ class GeocodingCache:
         self, activity_id: int, latitude: float, longitude: float
     ) -> Location | None:
         entry = self._entries.get(activity_id)
-        if entry is None or not _same_coordinates(entry, latitude, longitude):
-            return None
-        return entry.location
+        if entry is not None and _same_coordinates(entry, latitude, longitude):
+            return entry.location
+        return next(
+            (
+                candidate.location
+                for candidate in self._entries.values()
+                if _same_coordinates(candidate, latitude, longitude)
+            ),
+            None,
+        )
 
     def contains(self, activity_id: int) -> bool:
         """Return whether an activity has any provider cache entry."""

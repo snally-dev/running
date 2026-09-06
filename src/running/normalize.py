@@ -1,12 +1,11 @@
-"""Canonical normalization shared by Strava export and API ingestion."""
+"""Canonical normalization for Strava export ingestion."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 METERS_PER_MILE = 1609.344
 FEET_PER_METER = 3.280839895013123
@@ -21,7 +20,7 @@ class NormalizationError(ValueError):
 
 @dataclass(frozen=True)
 class Run:
-    """The single internal representation used for export and API activities."""
+    """The internal representation of a running activity."""
 
     activity_id: int
     start_datetime: datetime
@@ -119,12 +118,6 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
-def _latlng(value: object) -> tuple[object, object]:
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        return value[0], value[1]
-    return None, None
-
-
 def _utc_datetime(value: datetime | str, *, field: str, source: str) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -219,34 +212,6 @@ def normalize_run(
     )
 
 
-def normalize_api_activity(activity: Mapping[str, Any]) -> Run:
-    """Normalize a Strava SummaryActivity or DetailedActivity."""
-    activity_id = activity.get("id")
-    source = f"Strava API activity {activity_id!r}"
-    if not is_running_activity(activity.get("type"), activity.get("sport_type")):
-        raise NormalizationError(f"{source}: activity is not a supported run")
-    start_lat, start_lon = _latlng(activity.get("start_latlng"))
-    end_lat, end_lon = _latlng(activity.get("end_latlng"))
-    return normalize_run(
-        activity_id=activity_id,
-        start_datetime=activity.get("start_date"),  # type: ignore[arg-type]
-        name=activity.get("name", ""),
-        distance_m=activity.get("distance"),
-        moving_time_s=activity.get("moving_time"),
-        elapsed_time_s=activity.get("elapsed_time"),
-        elevation_gain_m=activity.get("total_elevation_gain"),
-        max_speed_mps=activity.get("max_speed"),
-        average_heart_rate_bpm=activity.get("average_heartrate"),
-        max_heart_rate_bpm=activity.get("max_heartrate"),
-        calories=activity.get("calories"),
-        start_lat=start_lat,
-        start_lon=start_lon,
-        end_lat=end_lat,
-        end_lon=end_lon,
-        source=source,
-    )
-
-
 def _rounded(value: float | None, digits: int) -> float | None:
     return None if value is None else round(value, digits)
 
@@ -292,7 +257,7 @@ def run_to_record(run: Run) -> dict[str, object]:
 
 
 def record_to_run(record: Mapping[str, object]) -> Run:
-    """Reload a public record for deterministic API upserts."""
+    """Reload canonical values from the public CSV."""
     activity_id = record.get("activity_id")
     return normalize_run(
         activity_id=activity_id,
@@ -311,33 +276,6 @@ def record_to_run(record: Mapping[str, object]) -> Run:
         start_country=record.get("start_country"),
         start_country_code=record.get("start_country_code"),
         source=f"public CSV activity {activity_id!r}",
-    )
-
-
-def merge_api_run(existing: Run | None, current: Run) -> Run:
-    """Prefer current API metadata, retaining export-only calories when absent.
-
-    List Athlete Activities supplies every public canonical field except calories.
-    Avoiding one DetailedActivity request per run keeps the weekly sync inexpensive;
-    historical export calories remain available while new API rows leave them blank.
-    """
-    if existing is None:
-        return current
-    retained = {
-        field: getattr(current, field) or getattr(existing, field)
-        for field in (
-            "start_city",
-            "start_state",
-            "start_country",
-            "start_country_code",
-        )
-    }
-    return replace(
-        current,
-        calories=(
-            current.calories if current.calories is not None else existing.calories
-        ),
-        **retained,
     )
 
 
@@ -362,9 +300,7 @@ __all__ = [
     "Run",
     "distance_flags",
     "is_running_activity",
-    "merge_api_run",
     "meters_to_miles",
-    "normalize_api_activity",
     "normalize_run",
     "pace_minutes_per_mile",
     "record_to_run",

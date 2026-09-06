@@ -5,11 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import math
-import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from running.geography import GeocodingStats, enrich_runs
 from running.normalize import (
     Run,
     distance_flags,
@@ -18,12 +16,9 @@ from running.normalize import (
     run_to_record,
     validate_runs,
 )
-from running.strava.export import discover_export, load_runs
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RAW_ROOT = PROJECT_ROOT / "data/raw/strava"
 OUTPUT_PATH = PROJECT_ROOT / "data/public/runs.csv"
-GEOCODING_CACHE_PATH = PROJECT_ROOT / "data/private/geocoding.csv"
 
 CSV_COLUMNS = (
     "activity_id",
@@ -142,49 +137,3 @@ def write_runs(
     if not output_path.exists() or output_path.read_text(encoding="utf-8") != text:
         output_path.write_text(text, encoding="utf-8")
     return output_path, records
-
-
-def build(
-    export_directory: Path | None = None, *, output_path: Path = OUTPUT_PATH
-) -> tuple[Path, list[dict[str, object]]]:
-    output_path, records, _ = build_with_stats(
-        export_directory, output_path=output_path
-    )
-    return output_path, records
-
-
-def build_with_stats(
-    export_directory: Path | None = None,
-    *,
-    output_path: Path = OUTPUT_PATH,
-    cache_path: Path = GEOCODING_CACHE_PATH,
-) -> tuple[Path, list[dict[str, object]], GeocodingStats]:
-    export_directory = export_directory or discover_export(RAW_ROOT)
-    runs = load_runs(export_directory, repository_root=PROJECT_ROOT)
-    runs, stats = enrich_runs(
-        runs,
-        cache_path=cache_path,
-        api_key=os.environ.get("BIGDATACLOUD_API_KEY"),
-    )
-    output_path, records = write_runs(runs, output_path=output_path)
-    return output_path, records, stats
-
-
-def main() -> None:
-    output_path, records, stats = build_with_stats()
-    total_miles = sum(float(record["distance_mi"]) for record in records)
-    print(f"Wrote {len(records):,} runs to {output_path.relative_to(PROJECT_ROOT)}")
-    print(f"Total running miles: {total_miles:,.2f}")
-    print(
-        f"Geocoding: {stats.valid_coordinates:,} coordinates, "
-        f"{stats.cache_hits:,} cache hits, {stats.public_hits:,} public-data hits, "
-        f"{stats.api_requests:,} API requests"
-    )
-    print(
-        f"Starting locations: {stats.city_enriched:,} cities, "
-        f"{stats.state_enriched:,} states, {stats.city_missing:,} without city"
-    )
-
-
-if __name__ == "__main__":
-    main()

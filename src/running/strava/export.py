@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import math
+import stat
+import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO
+from zipfile import BadZipFile, ZipFile
 
 import fitdecode
 
@@ -39,16 +43,38 @@ class GPSPoint:
     longitude: float
 
 
-def discover_export(search_root: Path) -> Path:
-    matches = sorted(
-        path.parent for path in search_root.glob("*/activities.csv") if path.is_file()
+@dataclass(frozen=True)
+class ParsedExport:
+    """Canonical runs and counts read from one export."""
+
+    activities_parsed: int
+    runs_parsed: int
+    runs: tuple[Run, ...]
+
+
+@dataclass(frozen=True)
+class ArchiveExport:
+    """A parsed ZIP with a deterministic preference key for overlapping exports."""
+
+    path: Path
+    exported_at: datetime
+    digest: str
+    parsed: ParsedExport
+
+    @property
+    def preference_key(self) -> tuple[datetime, str]:
+        return self.exported_at, self.digest
+
+
+def discover_archives(search_root: Path) -> list[Path]:
+    """Find every Strava ZIP below the raw-data directory."""
+    if not search_root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in search_root.rglob("*")
+        if path.is_file() and path.suffix.casefold() == ".zip"
     )
-    if len(matches) != 1:
-        raise StravaExportError(
-            "expected exactly one Strava export containing activities.csv under "
-            f"{search_root}; found {len(matches)}"
-        )
-    return matches[0]
 
 
 def _optional_text(value: str | None) -> str | None:
@@ -194,10 +220,8 @@ def _check_duplicate_semantics(
                 )
 
 
-def load_runs(
-    export_directory: Path, *, repository_root: Path | None = None
-) -> list[Run]:
-    """Load exactly the Strava `Run` rows, ordered by timestamp then activity ID."""
+def load_export_directory(export_directory: Path) -> ParsedExport:
+    """Load running rows and source counts from an extracted Strava export."""
     export_directory = Path(export_directory)
     csv_path = export_directory / "activities.csv"
     if not csv_path.is_file():
@@ -210,6 +234,8 @@ def load_runs(
 
     runs: list[Run] = []
     track_jobs: list[tuple[int, Path]] = []
+    activities_parsed = 0
+    runs_parsed = 0
     with stream:
         reader = csv.reader(stream)
         try:
@@ -221,8 +247,10 @@ def load_runs(
         rows = csv.DictReader(stream, fieldnames=header)
 
         for row_number, row in enumerate(rows, start=2):
+            activities_parsed += 1
             if not is_running_activity(row.get("Activity Type"), row.get("Type")):
                 continue
+            runs_parsed += 1
             _check_duplicate_semantics(row, header, row_number)
             raw_id = _optional_text(row.get("Activity ID"))
             try:
@@ -333,15 +361,95 @@ def load_runs(
                 end_lon=end_point.longitude if end_point else None,
             )
 
-    duplicate_ids = sorted(
-        activity_id
-        for activity_id, count in Counter(run.activity_id for run in runs).items()
-        if count > 1
+    by_id: dict[int, Run] = {}
+    for run in runs:
+        previous = by_id.get(run.activity_id)
+        if previous is None or _run_preference(run) > _run_preference(previous):
+            by_id[run.activity_id] = run
+    ordered = tuple(
+        sorted(by_id.values(), key=lambda run: (run.start_datetime, run.activity_id))
     )
-    if duplicate_ids:
-        shown = ", ".join(str(value) for value in duplicate_ids[:10])
-        raise StravaExportError(f"duplicate running Activity IDs: {shown}")
-    return sorted(runs, key=lambda run: (run.start_datetime, run.activity_id))
+    return ParsedExport(
+        activities_parsed=activities_parsed,
+        runs_parsed=runs_parsed,
+        runs=ordered,
+    )
+
+
+def _run_preference(run: Run) -> tuple[int, str]:
+    """Choose consistently if an export unexpectedly repeats an activity ID."""
+    populated = sum(
+        value not in (None, "")
+        for value in (
+            run.name,
+            run.elevation_gain_m,
+            run.max_speed_mps,
+            run.average_heart_rate_bpm,
+            run.max_heart_rate_bpm,
+            run.calories,
+            run.start_lat,
+            run.start_lon,
+            run.end_lat,
+            run.end_lon,
+        )
+    )
+    return populated, repr(run)
+
+
+def load_runs(export_directory: Path) -> list[Run]:
+    """Load canonical Strava runs from an extracted export directory."""
+    return list(load_export_directory(export_directory).runs)
+
+
+def _validate_members(archive_path: Path, archive: ZipFile) -> str:
+    names: set[str] = set()
+    activity_names: list[str] = []
+    for info in archive.infolist():
+        member = PurePosixPath(info.filename)
+        if member.is_absolute() or ".." in member.parts:
+            raise StravaExportError(
+                f"unsafe path in Strava archive {archive_path}: {info.filename!r}"
+            )
+        if info.filename in names:
+            raise StravaExportError(
+                f"duplicate member in Strava archive {archive_path}: {info.filename!r}"
+            )
+        names.add(info.filename)
+        if stat.S_ISLNK(info.external_attr >> 16):
+            raise StravaExportError(
+                f"symbolic link in Strava archive {archive_path}: {info.filename!r}"
+            )
+        if not info.is_dir() and member.name == "activities.csv":
+            activity_names.append(info.filename)
+    if len(activity_names) != 1:
+        raise StravaExportError(
+            f"Strava archive {archive_path} must contain exactly one activities.csv; "
+            f"found {len(activity_names)}"
+        )
+    return activity_names[0]
+
+
+def load_archive(path: Path) -> ArchiveExport:
+    """Safely unpack and parse one Strava bulk-export ZIP."""
+    path = Path(path)
+    try:
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        with ZipFile(path) as archive:
+            activity_name = _validate_members(path, archive)
+            activity_info = archive.getinfo(activity_name)
+            exported_at = datetime(*activity_info.date_time, tzinfo=UTC)
+            with tempfile.TemporaryDirectory(prefix="running-strava-") as temporary:
+                archive.extractall(temporary)
+                export_directory = Path(temporary) / PurePosixPath(activity_name).parent
+                parsed = load_export_directory(export_directory)
+    except StravaExportError:
+        raise
+    except (BadZipFile, OSError, RuntimeError, ValueError) as error:
+        raise StravaExportError(
+            f"could not read Strava archive {path}: {error}"
+        ) from error
+    return ArchiveExport(path, exported_at, digest, parsed)
 
 
 def _valid_point(latitude: object, longitude: object) -> GPSPoint | None:
@@ -447,10 +555,14 @@ def load_track_endpoints(path: Path) -> tuple[GPSPoint | None, GPSPoint | None]:
 
 __all__ = [
     "FIT_SEMICIRCLE_TO_DEGREES",
+    "ArchiveExport",
     "GPSPoint",
+    "ParsedExport",
     "StravaExportError",
     "TrackParseError",
-    "discover_export",
+    "discover_archives",
+    "load_archive",
+    "load_export_directory",
     "load_runs",
     "load_track",
     "load_track_endpoints",
