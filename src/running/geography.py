@@ -8,7 +8,8 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,31 @@ CACHE_COLUMNS = (
     "latitude",
     "longitude",
     "city",
+    "locality",
+    "postcode",
     "state",
+    "state_code",
     "country",
     "country_code",
+    "continent",
+    "continent_code",
+    "timezone",
+    "provider_payload_json",
     "provider",
     "geocoded_at",
+)
+REQUIRED_CACHE_COLUMNS = frozenset(
+    {
+        "activity_id",
+        "latitude",
+        "longitude",
+        "city",
+        "state",
+        "country",
+        "country_code",
+        "provider",
+        "geocoded_at",
+    }
 )
 COORDINATE_DIGITS = 6
 PROVIDER = "bigdatacloud"
@@ -44,6 +65,15 @@ class Location:
     state: str | None
     country: str | None
     country_code: str | None
+    locality: str | None = None
+    postcode: str | None = None
+    state_code: str | None = None
+    continent: str | None = None
+    continent_code: str | None = None
+    timezone: str | None = None
+    provider_payload: Mapping[str, Any] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -86,12 +116,28 @@ def parse_bigdatacloud_response(payload: Mapping[str, Any]) -> Location:
     country_code = _text(payload.get("countryCode"))
     if country_code is not None:
         country_code = country_code.upper() if len(country_code) == 2 else None
+    locality = _text(payload.get("locality"))
+    timezone = next(
+        (
+            _text(item.get("name"))
+            for item in payload.get("localityInfo", {}).get("informative", [])
+            if isinstance(item, dict) and item.get("description") == "time zone"
+        ),
+        None,
+    )
     return Location(
         # BigDataCloud explicitly recommends locality as the fallback for city.
-        city=_text(payload.get("city")) or _text(payload.get("locality")),
-        state=_text(payload.get("principalSubdivision")),
-        country=_text(payload.get("countryName")),
+        city=_text(payload.get("city")) or locality,
+        state=_text(payload.get("principalSubdivision")) or _text(payload.get("region")),
+        country=_text(payload.get("countryName")) or _text(payload.get("country")),
         country_code=country_code,
+        locality=locality,
+        postcode=_text(payload.get("postcode")),
+        state_code=_text(payload.get("principalSubdivisionCode")),
+        continent=_text(payload.get("continent")),
+        continent_code=_text(payload.get("continentCode")),
+        timezone=timezone,
+        provider_payload=dict(payload),
     )
 
 
@@ -179,7 +225,7 @@ class GeocodingCache:
         try:
             with self.path.open(encoding="utf-8", newline="") as stream:
                 reader = csv.DictReader(stream)
-                missing = set(CACHE_COLUMNS) - set(reader.fieldnames or ())
+                missing = REQUIRED_CACHE_COLUMNS - set(reader.fieldnames or ())
                 if missing:
                     raise ValueError("missing cache columns")
                 entries: dict[int, CacheEntry] = {}
@@ -198,6 +244,17 @@ class GeocodingCache:
                             state=_text(row["state"]),
                             country=_text(row["country"]),
                             country_code=_text(row["country_code"]),
+                            locality=_text(row.get("locality")),
+                            postcode=_text(row.get("postcode")),
+                            state_code=_text(row.get("state_code")),
+                            continent=_text(row.get("continent")),
+                            continent_code=_text(row.get("continent_code")),
+                            timezone=_text(row.get("timezone")),
+                            provider_payload=(
+                                json.loads(row["provider_payload_json"])
+                                if _text(row.get("provider_payload_json"))
+                                else None
+                            ),
                         ),
                         geocoded_at=row["geocoded_at"],
                     )
@@ -225,6 +282,10 @@ class GeocodingCache:
     def contains(self, activity_id: int) -> bool:
         """Return whether an activity has any provider cache entry."""
         return activity_id in self._entries
+
+    def entry(self, activity_id: int) -> CacheEntry | None:
+        """Return a private cache entry by activity ID."""
+        return self._entries.get(activity_id)
 
     def update(
         self,
@@ -257,9 +318,25 @@ class GeocodingCache:
                     "latitude": f"{entry.latitude:.{COORDINATE_DIGITS}f}",
                     "longitude": f"{entry.longitude:.{COORDINATE_DIGITS}f}",
                     "city": entry.location.city or "",
+                    "locality": entry.location.locality or "",
+                    "postcode": entry.location.postcode or "",
                     "state": entry.location.state or "",
+                    "state_code": entry.location.state_code or "",
                     "country": entry.location.country or "",
                     "country_code": entry.location.country_code or "",
+                    "continent": entry.location.continent or "",
+                    "continent_code": entry.location.continent_code or "",
+                    "timezone": entry.location.timezone or "",
+                    "provider_payload_json": (
+                        json.dumps(
+                            entry.location.provider_payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        if entry.location.provider_payload is not None
+                        else ""
+                    ),
                     "provider": PROVIDER,
                     "geocoded_at": entry.geocoded_at,
                 }
@@ -281,7 +358,9 @@ def _has_public_location(run: Run) -> bool:
     return any(
         (
             run.start_city,
+            run.start_locality,
             run.start_state,
+            run.start_state_code,
             run.start_country,
             run.start_country_code,
         )
@@ -291,10 +370,13 @@ def _has_public_location(run: Run) -> bool:
 def _with_location(run: Run, location: Location) -> Run:
     return replace(
         run,
-        start_city=location.city,
-        start_state=location.state,
-        start_country=location.country,
-        start_country_code=location.country_code,
+        start_city=location.city or run.start_city,
+        start_locality=location.locality or run.start_locality,
+        start_state=location.state or run.start_state,
+        start_state_code=location.state_code or run.start_state_code,
+        start_country=location.country or run.start_country,
+        start_country_code=location.country_code or run.start_country_code,
+        timezone=location.timezone or run.timezone,
     )
 
 
@@ -304,18 +386,62 @@ def enrich_runs(
     cache_path: Path,
     api_key: str | None,
     geocoder: BigDataCloudGeocoder | None = None,
+    refresh_cached_metadata: bool = False,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> tuple[list[Run], GeocodingStats]:
     """Apply cached/public locations and geocode only genuinely missing runs."""
+    runs = list(runs)
     cache = GeocodingCache(cache_path)
     enriched: list[Run] = []
     cache_hits = public_hits = api_requests = valid_coordinates = 0
     active_geocoder = geocoder
 
     try:
+        if refresh_cached_metadata:
+            if active_geocoder is None:
+                if not api_key:
+                    raise GeocodingError(
+                        "BIGDATACLOUD_API_KEY is required to refresh cached metadata"
+                    )
+                active_geocoder = BigDataCloudGeocoder(api_key)
+            targets: dict[tuple[float, float], list[CacheEntry]] = {}
+            for run in runs:
+                entry = cache.entry(run.activity_id)
+                if entry is not None:
+                    targets.setdefault((entry.latitude, entry.longitude), []).append(
+                        entry
+                    )
+            coordinates = sorted(targets)
+            if coordinates:
+                with ThreadPoolExecutor(max_workers=min(8, len(coordinates))) as executor:
+                    locations = executor.map(
+                        lambda point: active_geocoder.reverse(*point),  # type: ignore[union-attr]
+                        coordinates,
+                    )
+                    refreshed_at = now().isoformat(timespec="seconds").replace(
+                        "+00:00", "Z"
+                    )
+                    for coordinate, location in zip(
+                        coordinates, locations, strict=True
+                    ):
+                        for entry in targets[coordinate]:
+                            cache.update(
+                                entry.activity_id,
+                                entry.latitude,
+                                entry.longitude,
+                                location,
+                                geocoded_at=refreshed_at,
+                            )
+                        api_requests += 1
+
         for run in runs:
+            cached_entry = cache.entry(run.activity_id)
             if run.start_lat is None or run.start_lon is None:
-                enriched.append(run)
+                if cached_entry is None:
+                    enriched.append(run)
+                    continue
+                cache_hits += 1
+                enriched.append(_with_location(run, cached_entry.location))
                 continue
             valid_coordinates += 1
             location = cache.lookup(run.activity_id, run.start_lat, run.start_lon)
