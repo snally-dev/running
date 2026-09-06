@@ -10,7 +10,7 @@ from pathlib import Path
 
 from running.build import OUTPUT_PATH, PROJECT_ROOT, load_public_runs, write_runs
 from running.geography import GeocodingError, GeocodingStats, enrich_runs
-from running.normalize import Run
+from running.normalize import Run, is_indoor_run
 from running.strava.export import (
     StravaExportError,
     discover_archives,
@@ -27,6 +27,7 @@ class SyncResult:
     activities_parsed: int
     runs_retained: int
     duplicates_removed: int
+    indoor_excluded: int
     added: int
     updated: int
     existing_preserved: int
@@ -40,6 +41,8 @@ def _merge_run(existing: Run | None, exported: Run) -> Run:
     return replace(
         exported,
         name=exported.name or existing.name,
+        sport_type=exported.sport_type or existing.sport_type,
+        timezone=exported.timezone or existing.timezone,
         elevation_gain_m=(
             exported.elevation_gain_m
             if exported.elevation_gain_m is not None
@@ -72,7 +75,9 @@ def _merge_run(existing: Run | None, exported: Run) -> Run:
         end_lat=exported.end_lat if exported.end_lat is not None else existing.end_lat,
         end_lon=exported.end_lon if exported.end_lon is not None else existing.end_lon,
         start_city=existing.start_city,
+        start_locality=existing.start_locality,
         start_state=existing.start_state,
+        start_state_code=existing.start_state_code,
         start_country=existing.start_country,
         start_country_code=existing.start_country_code,
     )
@@ -86,11 +91,16 @@ def synchronize(
     archives.sort(key=lambda archive: archive.preference_key)
 
     exported_by_id: dict[int, Run] = {}
+    indoor_run_ids: set[int] = set()
     activities_parsed = runs_retained = 0
     for archive in archives:
         activities_parsed += archive.parsed.activities_parsed
         runs_retained += archive.parsed.runs_parsed
+        for activity_id in archive.parsed.indoor_run_ids:
+            exported_by_id.pop(activity_id, None)
+            indoor_run_ids.add(activity_id)
         for run in archive.parsed.runs:
+            indoor_run_ids.discard(run.activity_id)
             exported_by_id[run.activity_id] = _merge_run(
                 exported_by_id.get(run.activity_id), run
             )
@@ -99,7 +109,17 @@ def synchronize(
     existing_by_id = {run.activity_id: run for run in existing_runs}
     if len(existing_by_id) != len(existing_runs):
         raise ValueError("existing activity IDs must be unique")
-    combined = dict(existing_by_id)
+    existing_indoor_ids = {
+        run.activity_id
+        for run in existing_runs
+        if is_indoor_run(run.name, run.sport_type)
+    }
+    excluded_ids = indoor_run_ids | (existing_indoor_ids - exported_by_id.keys())
+    combined = {
+        activity_id: run
+        for activity_id, run in existing_by_id.items()
+        if activity_id not in excluded_ids
+    }
     added = updated = 0
     for activity_id, exported in exported_by_id.items():
         previous = existing_by_id.get(activity_id)
@@ -118,9 +138,12 @@ def synchronize(
         activities_parsed=activities_parsed,
         runs_retained=runs_retained,
         duplicates_removed=runs_retained - len(exported_by_id),
+        indoor_excluded=len(excluded_ids),
         added=added,
         updated=updated,
-        existing_preserved=len(existing_by_id.keys() - exported_by_id.keys()),
+        existing_preserved=len(
+            existing_by_id.keys() - exported_by_id.keys() - excluded_ids
+        ),
         total=len(ordered),
     )
 
@@ -131,6 +154,7 @@ def process_exports(
     output_path: Path = OUTPUT_PATH,
     cache_path: Path = GEOCODING_CACHE_PATH,
     api_key: str | None = None,
+    refresh_location_metadata: bool = False,
 ) -> tuple[Path, SyncResult, GeocodingStats]:
     """Run export discovery, merge, location enrichment, and CSV writing."""
     archives = discover_archives(raw_root)
@@ -140,23 +164,31 @@ def process_exports(
         runs,
         cache_path=cache_path,
         api_key=api_key,
+        refresh_cached_metadata=refresh_location_metadata,
     )
     output_path, _ = write_runs(runs, output_path=output_path)
     return output_path, result, geocoding
 
 
 def _parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Update runs.csv from Strava bulk-export ZIPs."
     )
+    parser.add_argument(
+        "--refresh-location-metadata",
+        action="store_true",
+        help="re-query cached coordinates for all BigDataCloud metadata",
+    )
+    return parser
 
 
 def main() -> None:
     parser = _parser()
-    parser.parse_args()
+    args = parser.parse_args()
     try:
         output_path, result, geocoding = process_exports(
-            api_key=os.environ.get("BIGDATACLOUD_API_KEY")
+            api_key=os.environ.get("BIGDATACLOUD_API_KEY"),
+            refresh_location_metadata=args.refresh_location_metadata,
         )
     except (GeocodingError, StravaExportError, ValueError) as error:
         parser.exit(2, f"running.sync: {error}\n")
@@ -167,6 +199,7 @@ def main() -> None:
         f"runs retained: {result.runs_retained:,}"
     )
     print(f"Duplicate activities removed: {result.duplicates_removed:,}")
+    print(f"Indoor runs excluded: {result.indoor_excluded:,}")
     print(
         f"Dataset changes: {result.added:,} added, {result.updated:,} updated, "
         f"{result.existing_preserved:,} existing-only preserved"
