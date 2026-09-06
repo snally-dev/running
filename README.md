@@ -18,6 +18,13 @@ The export's `activities.csv` supplies run metadata. Its FIT/GPX/TCX files remai
 private raw geographic source data. Precise start/end coordinates are deliberately
 not published in `runs.csv`.
 
+When `BIGDATACLOUD_API_KEY` is available, BigDataCloud reverse geocodes each
+uncached run start. Results are stored in the ignored
+`data/private/geocoding.csv`; historical coordinates should normally be requested
+only once. A build without the key succeeds when coordinates are already cached,
+but fails clearly if a lookup is still required. The public CSV contains only
+normalized `start_city`, `start_state`, `start_country`, and `start_country_code`.
+
 ## Incremental synchronization
 
 Once Strava credentials are configured, refresh recent activities with:
@@ -41,6 +48,7 @@ Required runtime secrets:
 - `STRAVA_CLIENT_ID`
 - `STRAVA_CLIENT_SECRET`
 - `STRAVA_REFRESH_TOKEN` for the first local run
+- `BIGDATACLOUD_API_KEY` when a run start is not already geocoded
 
 Optional values are `STRAVA_ACCESS_TOKEN`, `STRAVA_ACCESS_TOKEN_EXPIRES_AT`,
 `STRAVA_TOKEN_FILE`, and `STRAVA_LOOKBACK_DAYS`. Never commit any of them. The
@@ -65,6 +73,9 @@ run. Historical export calories are retained during API upserts; new API-only
 rows leave calories blank rather than spend one detail request per activity.
 Transient server failures receive two short retries. Rate-limit responses are not
 blindly retried; sync stops with Strava's read-usage and limit headers.
+Weekly sync reuses private cache entries when available and otherwise reuses safe
+location fields already committed in the public CSV, so only new or changed run
+starts normally require BigDataCloud requests.
 
 ## Weekly automation scaffold
 
