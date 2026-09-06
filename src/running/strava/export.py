@@ -22,6 +22,7 @@ import fitdecode
 
 from running.normalize import (
     Run,
+    is_indoor_run,
     is_running_activity,
     normalize_run,
 )
@@ -49,6 +50,7 @@ class ParsedExport:
 
     activities_parsed: int
     runs_parsed: int
+    indoor_run_ids: tuple[int, ...]
     runs: tuple[Run, ...]
 
 
@@ -233,6 +235,7 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
         raise StravaExportError(f"could not read {csv_path}: {error}") from error
 
     runs: list[Run] = []
+    indoor_run_ids: list[int] = []
     track_jobs: list[tuple[int, Path]] = []
     activities_parsed = 0
     runs_parsed = 0
@@ -250,8 +253,6 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
             activities_parsed += 1
             if not is_running_activity(row.get("Activity Type"), row.get("Type")):
                 continue
-            runs_parsed += 1
-            _check_duplicate_semantics(row, header, row_number)
             raw_id = _optional_text(row.get("Activity ID"))
             try:
                 activity_id = int(raw_id) if raw_id is not None else None
@@ -263,6 +264,12 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
                 raise StravaExportError(
                     f"activities.csv row {row_number}: Activity ID is missing"
                 )
+            if is_indoor_run(row.get("Activity Name"), row.get("Type")):
+                indoor_run_ids.append(activity_id)
+                continue
+
+            runs_parsed += 1
+            _check_duplicate_semantics(row, header, row_number)
 
             distance_column = _detail_column(header, "Distance")
             elapsed_column = _detail_column(header, "Elapsed Time")
@@ -307,6 +314,7 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
                         row.get("Activity Date"), row_number
                     ),
                     name=row.get("Activity Name", ""),
+                    sport_type=row.get("Type") or row.get("Activity Type"),
                     distance_m=distance_m,
                     moving_time_s=_whole_seconds(
                         row.get("Moving Time"),
@@ -372,6 +380,7 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
     return ParsedExport(
         activities_parsed=activities_parsed,
         runs_parsed=runs_parsed,
+        indoor_run_ids=tuple(indoor_run_ids),
         runs=ordered,
     )
 
