@@ -28,18 +28,6 @@ wheels = [
 ]
 
 [[package]]
-name = "bigdatacloud"
-version = "1.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/74/7d/62cc9ae6fb855dd4157a2b58fc1659c253d4eb0071a4ec47867debe3ac6d/bigdatacloud-1.1.0.tar.gz", hash = "sha256:49e63a6cf587cf044fdd895ebd48ee4be4c53016ec48fcaf5d815e3f853c686a", size = 20020, upload-time = "2026-04-10T23:41:47.966Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/f4/e97b71b8497dbf659b972dad6daeb74d5dd8a19c88d34520edaffd5f34cd/bigdatacloud-1.1.0-py3-none-any.whl", hash = "sha256:d37cd02e2f530665bcbe5ee30399991b6fdbf0937c32c9d48cd57a0051108716", size = 24305, upload-time = "2026-04-10T23:41:46.891Z" },
-]
-
-[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -194,7 +182,6 @@ name = "running"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "bigdatacloud" },
     { name = "fitdecode" },
     { name = "httpx" },
 ]
@@ -207,7 +194,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bigdatacloud", specifier = ">=1.1.0" },
     { name = "fitdecode", specifier = ">=0.11.0" },
     { name = "httpx", specifier = ">=0.28.1" },
 ]
