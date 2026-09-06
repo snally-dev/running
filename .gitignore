@@ -207,14 +207,14 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
-# Private Strava source export. Keep the derived public CSV under version control.
+# Private Strava bulk-export ZIPs. Keep the derived public CSV under version control.
 data/raw/*
-!data/raw/.gitkeep
+!data/raw/strava/
+data/raw/strava/*
+!data/raw/strava/.gitkeep
 
-# Private API streams and rotating OAuth token state.
+# Private reverse-geocoding cache.
 data/private/
-.strava-token*.json
-strava-token*.json
 
 # PyPI configuration file
 .pypirc
