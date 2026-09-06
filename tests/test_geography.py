@@ -137,6 +137,20 @@ def test_cache_miss_performs_one_api_request(tmp_path: Path) -> None:
     assert geocoder.calls == [(38.1234564, -77.1234564)]
 
 
+def test_same_coordinates_are_geocoded_only_once(tmp_path: Path) -> None:
+    geocoder = FakeGeocoder(Location("Frederick", "Maryland", "United States", "US"))
+    runs, stats = enrich_runs(
+        [_run(activity_id=1), _run(activity_id=2)],
+        cache_path=tmp_path / "cache.csv",
+        api_key=None,
+        geocoder=geocoder,  # type: ignore[arg-type]
+    )
+    assert [run.start_city for run in runs] == ["Frederick", "Frederick"]
+    assert stats.api_requests == 1
+    assert stats.cache_hits == 1
+    assert geocoder.calls == [(38.1234564, -77.1234564)]
+
+
 def test_changed_coordinates_invalidate_cache(tmp_path: Path) -> None:
     path = tmp_path / "cache.csv"
     _cache(path)

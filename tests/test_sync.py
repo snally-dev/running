@@ -1,136 +1,197 @@
 from __future__ import annotations
 
 import csv
-import json
+import io
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from zipfile import ZipFile, ZipInfo
+
+import pytest
 
 from running.build import write_runs
 from running.normalize import Run
-from running.sync import synchronize
+from running.strava.export import StravaExportError, discover_archives
+from running.sync import process_exports, synchronize
+
+HEADER = [
+    "Activity ID",
+    "Activity Date",
+    "Activity Name",
+    "Activity Type",
+    "Filename",
+    "Elapsed Time",
+    "Moving Time",
+    "Distance",
+    "Elevation Gain",
+    "Max Speed",
+    "Max Heart Rate",
+    "Average Heart Rate",
+    "Calories",
+    "Type",
+]
 
 
-class FakeClient:
-    def __init__(self, activities: list[dict[str, Any]]) -> None:
-        self.activities = activities
-        self.stream_calls: list[int] = []
+def _row(
+    activity_id: int,
+    *,
+    name: str | None = None,
+    activity_type: str = "Run",
+    calories: str = "400",
+) -> list[str]:
+    return [
+        str(activity_id),
+        "Jan 02, 2024, 03:04:05 PM",
+        name or f"Activity {activity_id}",
+        activity_type,
+        "",
+        "1800",
+        "1700",
+        "5.0",
+        "12.3",
+        "4.2",
+        "180",
+        "150",
+        calories,
+        "",
+    ]
 
-    def iter_activities(self, *, after: int, before: int | None = None):
-        assert after == 100
-        assert before == 200
-        yield from self.activities
 
-    def get_activity_streams(self, activity_id: int) -> dict[str, object]:
-        self.stream_calls.append(activity_id)
-        return {"latlng": {"data": [[38.1, -77.1]]}, "time": {"data": [0]}}
+def _archive(
+    path: Path,
+    rows: list[list[str]],
+    *,
+    timestamp: tuple[int, int, int, int, int, int] = (2024, 1, 1, 0, 0, 0),
+) -> Path:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(HEADER)
+    writer.writerows(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    info = ZipInfo("export/activities.csv", date_time=timestamp)
+    with ZipFile(path, "w") as archive:
+        archive.writestr(info, output.getvalue())
+    return path
 
 
 def _run(**changes: object) -> Run:
     values: dict[str, object] = {
         "activity_id": 1,
-        "start_datetime": datetime(2024, 1, 2, tzinfo=UTC),
-        "name": "Morning Run",
+        "start_datetime": datetime(2024, 1, 2, 15, 4, 5, tzinfo=UTC),
+        "name": "Existing name",
         "activity_type": "Run",
         "distance_m": 5000.0,
-        "moving_time_s": 1500,
-        "elapsed_time_s": 1600,
-        "elevation_gain_m": 12.0,
+        "moving_time_s": 1700,
+        "elapsed_time_s": 1800,
+        "elevation_gain_m": 12.3,
         "max_speed_mps": 4.2,
-        "average_heart_rate_bpm": None,
-        "max_heart_rate_bpm": None,
+        "average_heart_rate_bpm": 150.0,
+        "max_heart_rate_bpm": 180.0,
         "calories": 400.0,
+        "start_city": "Frederick",
+        "start_state": "Maryland",
+        "start_country": "United States",
+        "start_country_code": "US",
     }
     values.update(changes)
     return Run(**values)  # type: ignore[arg-type]
 
 
-def _activity(**changes: object) -> dict[str, object]:
-    values: dict[str, object] = {
-        "id": 2,
-        "start_date": "2024-01-03T00:00:00Z",
-        "name": "Evening Run",
-        "type": "Run",
-        "sport_type": "Run",
-        "distance": 6000.0,
-        "moving_time": 1800,
-        "elapsed_time": 1900,
-        "total_elevation_gain": 20.0,
-        "max_speed": 4.5,
-        "private": True,
-    }
-    values.update(changes)
-    return values
-
-
-def _sync(
-    client: FakeClient, existing: list[Run], stream_root: Path
-) -> tuple[list[Run], object]:
-    return synchronize(
-        client,
-        existing,
-        after=100,
-        before=200,
-        stream_root=stream_root,
+def test_multiple_overlapping_exports_are_order_independent(tmp_path: Path) -> None:
+    old = _archive(tmp_path / "old.zip", [_row(1), _row(2, name="Old name")])
+    new = _archive(
+        tmp_path / "new.zip",
+        [_row(2, name="Edited name"), _row(3)],
+        timestamp=(2025, 1, 1, 0, 0, 0),
     )
 
+    forward, forward_result = synchronize([old, new], [])
+    backward, backward_result = synchronize([new, old], [])
 
-def test_no_new_activities(tmp_path: Path) -> None:
-    runs, result = _sync(FakeClient([]), [_run()], tmp_path)
-    assert runs == [_run()]
-    assert result.added == result.updated == 0
-
-
-def test_new_private_run_is_added_and_non_run_filtered(tmp_path: Path) -> None:
-    client = FakeClient([_activity(), _activity(id=3, sport_type="Hike")])
-    runs, result = _sync(client, [_run()], tmp_path)
-    assert [run.activity_id for run in runs] == [1, 2]
-    assert result.fetched == 2
-    assert result.runs == result.added == 1
+    assert forward == backward
+    assert forward_result == backward_result
+    assert [run.activity_id for run in forward] == [1, 2, 3]
+    assert next(run for run in forward if run.activity_id == 2).name == "Edited name"
+    assert forward_result.duplicates_removed == 1
 
 
-def test_existing_activity_is_updated_by_id(tmp_path: Path) -> None:
-    client = FakeClient(
-        [_activity(id=1, name="Edited name", start_date="2024-01-02T00:00:00Z")]
+def test_duplicate_ids_inside_archive_are_removed(tmp_path: Path) -> None:
+    archive = _archive(tmp_path / "duplicate.zip", [_row(1), _row(1)])
+    runs, result = synchronize([archive], [])
+    assert [run.activity_id for run in runs] == [1]
+    assert result.duplicates_removed == 1
+
+
+def test_existing_rows_and_omitted_values_are_preserved(tmp_path: Path) -> None:
+    archive = _archive(tmp_path / "export.zip", [_row(1, name="Edited", calories="")])
+    absent_from_export = _run(
+        activity_id=99,
+        start_datetime=datetime(2023, 1, 1, tzinfo=UTC),
+        name="Historical row",
     )
-    runs, result = _sync(client, [_run()], tmp_path)
-    assert len(runs) == 1
-    assert runs[0].name == "Edited name"
-    assert runs[0].calories == 400.0
-    assert result.updated == 1
+
+    runs, result = synchronize([archive], [_run(), absent_from_export])
+
+    by_id = {run.activity_id: run for run in runs}
+    assert by_id[1].name == "Edited"
+    assert by_id[1].calories == 400
+    assert by_id[1].start_city == "Frederick"
+    assert by_id[99] == absent_from_export
+    assert result.existing_preserved == 1
 
 
-def test_geographic_stream_is_stored_once_deterministically(tmp_path: Path) -> None:
-    client = FakeClient([_activity(start_latlng=[38.1, -77.1])])
-    first, first_result = _sync(client, [], tmp_path)
-    second, second_result = _sync(client, first, tmp_path)
-    path = tmp_path / "2.json"
-    assert path.read_text(encoding="utf-8") == (
-        '{"latlng":{"data":[[38.1,-77.1]]},"time":{"data":[0]}}\n'
+def test_repeated_processing_is_idempotent(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    output = tmp_path / "runs.csv"
+    cache = tmp_path / "cache.csv"
+    _archive(raw / "export.zip", [_row(1), _row(2)])
+
+    process_exports(raw_root=raw, output_path=output, cache_path=cache)
+    first = output.read_bytes()
+    _, second_result, _ = process_exports(
+        raw_root=raw, output_path=output, cache_path=cache
     )
-    assert client.stream_calls == [2]
-    assert first_result.streams_added == 1
-    assert second_result.streams_added == 0
-    assert first == second
+
+    assert output.read_bytes() == first
+    assert second_result.added == 0
+    assert second_result.total == 2
 
 
-def test_repeated_sync_produces_identical_csv(tmp_path: Path) -> None:
-    client = FakeClient([_activity()])
-    first, _ = _sync(client, [_run()], tmp_path / "streams")
-    first_path = tmp_path / "first.csv"
-    second_path = tmp_path / "second.csv"
-    write_runs(first, output_path=first_path)
-    second, result = _sync(client, first, tmp_path / "streams")
-    write_runs(second, output_path=second_path)
-    assert result.added == result.updated == 0
-    assert first_path.read_bytes() == second_path.read_bytes()
+def test_no_archives_preserves_existing_csv(tmp_path: Path) -> None:
+    raw = tmp_path / "missing-raw"
+    output = tmp_path / "runs.csv"
+    write_runs([_run()], output_path=output)
+    before = output.read_bytes()
+
+    _, result, geocoding = process_exports(
+        raw_root=raw,
+        output_path=output,
+        cache_path=tmp_path / "cache.csv",
+    )
+
+    assert output.read_bytes() == before
+    assert result.archives_found == 0
+    assert result.existing_preserved == result.total == 1
+    assert geocoding.api_requests == 0
 
 
-def test_public_csv_has_no_coordinates(tmp_path: Path) -> None:
-    path = tmp_path / "runs.csv"
-    write_runs([_run()], output_path=path)
-    with path.open(encoding="utf-8", newline="") as stream:
-        row = next(csv.DictReader(stream))
-    assert "start_lat" not in row
-    assert "end_lon" not in row
-    assert "latlng" not in json.dumps(row)
+@pytest.mark.parametrize("contents", [b"not a zip", b""])
+def test_malformed_archive_fails_clearly(tmp_path: Path, contents: bytes) -> None:
+    path = tmp_path / "broken.zip"
+    path.write_bytes(contents)
+    with pytest.raises(StravaExportError, match="could not read Strava archive"):
+        synchronize([path], [])
+
+
+def test_archive_without_activities_csv_fails_clearly(tmp_path: Path) -> None:
+    path = tmp_path / "missing.zip"
+    with ZipFile(path, "w") as archive:
+        archive.writestr("readme.txt", "missing")
+    with pytest.raises(StravaExportError, match="exactly one activities.csv"):
+        synchronize([path], [])
+
+
+def test_archive_discovery_is_recursive_and_case_insensitive(tmp_path: Path) -> None:
+    first = _archive(tmp_path / "one.zip", [_row(1)])
+    second = _archive(tmp_path / "history" / "two.ZIP", [_row(2)])
+    (tmp_path / "ignore.txt").write_text("no", encoding="utf-8")
+    assert discover_archives(tmp_path) == [second, first]

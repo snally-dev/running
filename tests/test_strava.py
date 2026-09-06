@@ -8,7 +8,6 @@ import pytest
 
 from running.strava import (
     METERS_PER_MILE,
-    StravaExportError,
     distance_flags,
     load_runs,
     load_track_endpoints,
@@ -127,10 +126,9 @@ def test_runs_are_deterministically_ordered(tmp_path: Path) -> None:
     assert [run.activity_id for run in load_runs(export)] == [1, 2, 3]
 
 
-def test_duplicate_running_activity_ids_fail(tmp_path: Path) -> None:
+def test_duplicate_running_activity_ids_are_deduplicated(tmp_path: Path) -> None:
     export = _export(tmp_path, [_row(1), _row(1)])
-    with pytest.raises(StravaExportError, match="duplicate running Activity IDs: 1"):
-        load_runs(export)
+    assert [run.activity_id for run in load_runs(export)] == [1]
 
 
 def test_missing_detail_elapsed_time_uses_summary_value(tmp_path: Path) -> None:
