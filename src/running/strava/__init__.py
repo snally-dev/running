@@ -4,7 +4,6 @@ from running.normalize import (
     FEET_PER_METER,
     METERS_PER_MILE,
     Run,
-    distance_flags,
     meters_to_miles,
     pace_minutes_per_mile,
 )
@@ -34,7 +33,6 @@ __all__ = [
     "StravaExportError",
     "TrackParseError",
     "discover_archives",
-    "distance_flags",
     "load_archive",
     "load_export_directory",
     "load_runs",
