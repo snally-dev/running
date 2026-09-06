@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,6 +35,14 @@ class Run:
     average_heart_rate_bpm: float | None
     max_heart_rate_bpm: float | None
     calories: float | None
+    start_lat: float | None = None
+    start_lon: float | None = None
+    end_lat: float | None = None
+    end_lon: float | None = None
+    start_city: str | None = None
+    start_state: str | None = None
+    start_country: str | None = None
+    start_country_code: str | None = None
 
 
 def is_running_activity(
@@ -95,6 +103,28 @@ def _whole_seconds(value: object, *, field: str, source: str) -> int:
     return int(number)
 
 
+def _coordinate(
+    value: object, *, minimum: float, maximum: float, field: str, source: str
+) -> float | None:
+    if value is None or value == "":
+        return None
+    number = _optional_float(value, field=field, source=source)
+    return number if number is not None and minimum <= number <= maximum else None
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _latlng(value: object) -> tuple[object, object]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return value[0], value[1]
+    return None, None
+
+
 def _utc_datetime(value: datetime | str, *, field: str, source: str) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -121,6 +151,14 @@ def normalize_run(
     average_heart_rate_bpm: object = None,
     max_heart_rate_bpm: object = None,
     calories: object = None,
+    start_lat: object = None,
+    start_lon: object = None,
+    end_lat: object = None,
+    end_lon: object = None,
+    start_city: object = None,
+    start_state: object = None,
+    start_country: object = None,
+    start_country_code: object = None,
     source: str,
 ) -> Run:
     """Validate source values and construct the shared canonical model."""
@@ -133,6 +171,22 @@ def normalize_run(
     elapsed = _whole_seconds(elapsed_time_s, field="elapsed time", source=source)
     if distance < 0 or moving < 0 or elapsed < 0:
         raise NormalizationError(f"{source}: distance and times must be non-negative")
+    normalized_start_lat = _coordinate(
+        start_lat, minimum=-90, maximum=90, field="start latitude", source=source
+    )
+    normalized_start_lon = _coordinate(
+        start_lon, minimum=-180, maximum=180, field="start longitude", source=source
+    )
+    if normalized_start_lat is None or normalized_start_lon is None:
+        normalized_start_lat = normalized_start_lon = None
+    normalized_end_lat = _coordinate(
+        end_lat, minimum=-90, maximum=90, field="end latitude", source=source
+    )
+    normalized_end_lon = _coordinate(
+        end_lon, minimum=-180, maximum=180, field="end longitude", source=source
+    )
+    if normalized_end_lat is None or normalized_end_lon is None:
+        normalized_end_lat = normalized_end_lon = None
     return Run(
         activity_id=normalized_id,
         start_datetime=_utc_datetime(
@@ -154,6 +208,14 @@ def normalize_run(
             max_heart_rate_bpm, field="max heart rate", source=source
         ),
         calories=_optional_float(calories, field="calories", source=source),
+        start_lat=normalized_start_lat,
+        start_lon=normalized_start_lon,
+        end_lat=normalized_end_lat,
+        end_lon=normalized_end_lon,
+        start_city=_optional_text(start_city),
+        start_state=_optional_text(start_state),
+        start_country=_optional_text(start_country),
+        start_country_code=_optional_text(start_country_code),
     )
 
 
@@ -163,6 +225,8 @@ def normalize_api_activity(activity: Mapping[str, Any]) -> Run:
     source = f"Strava API activity {activity_id!r}"
     if not is_running_activity(activity.get("type"), activity.get("sport_type")):
         raise NormalizationError(f"{source}: activity is not a supported run")
+    start_lat, start_lon = _latlng(activity.get("start_latlng"))
+    end_lat, end_lon = _latlng(activity.get("end_latlng"))
     return normalize_run(
         activity_id=activity_id,
         start_datetime=activity.get("start_date"),  # type: ignore[arg-type]
@@ -175,6 +239,10 @@ def normalize_api_activity(activity: Mapping[str, Any]) -> Run:
         average_heart_rate_bpm=activity.get("average_heartrate"),
         max_heart_rate_bpm=activity.get("max_heartrate"),
         calories=activity.get("calories"),
+        start_lat=start_lat,
+        start_lon=start_lon,
+        end_lat=end_lat,
+        end_lon=end_lon,
         source=source,
     )
 
@@ -216,6 +284,10 @@ def run_to_record(run: Run) -> dict[str, object]:
         "max_heart_rate_bpm": _rounded(run.max_heart_rate_bpm, 1),
         "calories": _rounded(run.calories, 1),
         **distance_flags(run.distance_m),
+        "start_city": run.start_city,
+        "start_state": run.start_state,
+        "start_country": run.start_country,
+        "start_country_code": run.start_country_code,
     }
 
 
@@ -234,6 +306,10 @@ def record_to_run(record: Mapping[str, object]) -> Run:
         average_heart_rate_bpm=record.get("average_heart_rate_bpm"),
         max_heart_rate_bpm=record.get("max_heart_rate_bpm"),
         calories=record.get("calories"),
+        start_city=record.get("start_city"),
+        start_state=record.get("start_state"),
+        start_country=record.get("start_country"),
+        start_country_code=record.get("start_country_code"),
         source=f"public CSV activity {activity_id!r}",
     )
 
@@ -245,9 +321,24 @@ def merge_api_run(existing: Run | None, current: Run) -> Run:
     Avoiding one DetailedActivity request per run keeps the weekly sync inexpensive;
     historical export calories remain available while new API rows leave them blank.
     """
-    if existing is None or current.calories is not None:
+    if existing is None:
         return current
-    return Run(**{**current.__dict__, "calories": existing.calories})
+    retained = {
+        field: getattr(current, field) or getattr(existing, field)
+        for field in (
+            "start_city",
+            "start_state",
+            "start_country",
+            "start_country_code",
+        )
+    }
+    return replace(
+        current,
+        calories=(
+            current.calories if current.calories is not None else existing.calories
+        ),
+        **retained,
+    )
 
 
 def validate_runs(runs: Iterable[Run]) -> list[Run]:
