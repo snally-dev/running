@@ -108,7 +108,17 @@ runs_by_locality_df = (
         "start_locality",
     )
     .agg(*location_aggregations)
-    .sort("total_distance_miles", descending=True)
+    .sort(
+        [
+            "total_distance_miles",
+            "start_country_code",
+            "start_region_code",
+            "start_city",
+            "start_locality",
+        ],
+        descending=[True, False, False, False, False],
+        nulls_last=True,
+    )
 )
 
 runs_by_city_df = (
@@ -121,7 +131,16 @@ runs_by_city_df = (
         "start_city",
     )
     .agg(*location_aggregations)
-    .sort("total_distance_miles", descending=True)
+    .sort(
+        [
+            "total_distance_miles",
+            "start_country_code",
+            "start_region_code",
+            "start_city",
+        ],
+        descending=[True, False, False, False],
+        nulls_last=True,
+    )
 )
 
 runs_by_region_df = (
@@ -133,14 +152,22 @@ runs_by_region_df = (
         "start_region",
     )
     .agg(*location_aggregations)
-    .sort("total_distance_miles", descending=True)
+    .sort(
+        ["total_distance_miles", "start_country_code", "start_region_code"],
+        descending=[True, False, False],
+        nulls_last=True,
+    )
 )
 
 runs_by_country_df = (
     runs_df.filter(pl.col("start_country").is_not_null())
     .group_by("start_country_code", "start_country")
     .agg(*location_aggregations)
-    .sort("total_distance_miles", descending=True)
+    .sort(
+        ["total_distance_miles", "start_country_code"],
+        descending=[True, False],
+        nulls_last=True,
+    )
 )
 
 
