@@ -83,7 +83,6 @@ def _run(**changes: object) -> Run:
         "moving_time_s": 1700,
         "elapsed_time_s": 1800,
         "elevation_gain_m": 12.3,
-        "max_speed_mps": 4.2,
         "average_heart_rate_bpm": 150.0,
         "max_heart_rate_bpm": 180.0,
         "calories": 400.0,
@@ -129,11 +128,15 @@ def test_existing_rows_and_omitted_values_are_preserved(tmp_path: Path) -> None:
         name="Historical row",
     )
 
-    runs, result = synchronize([archive], [_run(), absent_from_export])
+    runs, result = synchronize(
+        [archive],
+        [_run(relative_effort=25), absent_from_export],
+    )
 
     by_id = {run.activity_id: run for run in runs}
     assert by_id[1].name == "Edited"
     assert by_id[1].calories == 400
+    assert by_id[1].relative_effort == 25
     assert by_id[1].start_city == "Frederick"
     assert by_id[99] == absent_from_export
     assert result.existing_preserved == 1

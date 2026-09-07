@@ -55,7 +55,6 @@ def test_export_values_are_normalized() -> None:
         moving_time_s="1500",
         elapsed_time_s="1600",
         elevation_gain_m="12.3",
-        max_speed_mps="4.2",
         sport_type="TrailRun",
         timezone="America/New_York",
         source="export row",
@@ -65,5 +64,7 @@ def test_export_values_are_normalized() -> None:
     assert run.moving_time_s == 1500
     assert run.sport_type == "TrailRun"
     record = run_to_record(run)
-    assert record["local_date"] == "2024-01-01"
-    assert record["local_start_datetime"] == "2024-01-01T19:00:00-05:00"
+    assert record["distance_miles"] == 3.11
+    assert record["start_datetime_utc"] == "2024-01-02T00:00:00Z"
+    assert record["activity_date_local"] == "2024-01-01"
+    assert "local_start_datetime" not in record

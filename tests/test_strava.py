@@ -8,6 +8,7 @@ import pytest
 
 from running.strava import (
     METERS_PER_MILE,
+    load_export_directory,
     load_runs,
     load_track_endpoints,
     meters_to_miles,
@@ -32,6 +33,17 @@ HEADER = [
     "Average Heart Rate",
     "Calories",
     "Type",
+    "Activity Description",
+    "Relative Effort",
+    "Elevation Loss",
+    "Elevation Low",
+    "Elevation High",
+    "Max Grade",
+    "Average Grade",
+    "Max Cadence",
+    "Average Cadence",
+    "Grade Adjusted Distance",
+    "Dirt Distance",
 ]
 
 
@@ -63,6 +75,17 @@ def _row(
         "150.0",
         "400.0",
         sport_type,
+        "Easy aerobic run",
+        "42.0",
+        "11.5",
+        "20.0",
+        "45.0",
+        "8.2",
+        "0.1",
+        "94.0",
+        "86.0",
+        "5100.0",
+        "1200.0",
     ]
 
 
@@ -131,10 +154,22 @@ def test_missing_optional_values_are_preserved(tmp_path: Path) -> None:
         row[index] = ""
     run = load_runs(_export(tmp_path, [row]))[0]
     assert run.elevation_gain_m is None
-    assert run.max_speed_mps is None
     assert run.average_heart_rate_bpm is None
     assert run.max_heart_rate_bpm is None
     assert run.calories is None
+
+
+def test_useful_activity_metadata_is_retained(tmp_path: Path) -> None:
+    run = load_runs(_export(tmp_path, [_row(1)]))[0]
+
+    assert run.relative_effort == 42
+
+
+def test_metadata_can_load_without_exported_track_files(tmp_path: Path) -> None:
+    export = _export(tmp_path, [_row(1, filename="activities/missing.fit.gz")])
+    parsed = load_export_directory(export, load_tracks=False)
+
+    assert parsed.runs[0].relative_effort == 42
 
 
 def test_gpx_endpoints_are_loaded(tmp_path: Path) -> None:

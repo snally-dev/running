@@ -28,7 +28,6 @@ def _run(**changes: object) -> Run:
         "moving_time_s": 1500,
         "elapsed_time_s": 1600,
         "elevation_gain_m": None,
-        "max_speed_mps": None,
         "average_heart_rate_bpm": None,
         "max_heart_rate_bpm": None,
         "calories": None,
@@ -370,7 +369,7 @@ def test_public_csv_is_deterministic_and_contains_no_secrets_or_coordinates(
     with first.open(encoding="utf-8", newline="") as stream:
         record = next(csv.DictReader(stream))
     assert record["start_city"] == "Frederick"
-    assert record["start_state"] == "Maryland"
+    assert record["start_region"] == "Maryland"
     assert record["start_country"] == "United States"
     assert record["start_country_code"] == "US"
     assert "38.1234564" not in text
