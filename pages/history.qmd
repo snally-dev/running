@@ -1,0 +1,246 @@
+---
+title: "History"
+---
+
+```{python}
+from datetime import date
+
+import polars as pl
+from plotnine import (
+    aes,
+    element_blank,
+    geom_area,
+    geom_line,
+    geom_point,
+    geom_text,
+    geom_tile,
+    geom_vline,
+    ggplot,
+    labs,
+    scale_color_manual,
+    scale_y_continuous,
+    scale_y_reverse,
+    scale_fill_gradient,
+    scale_x_continuous,
+    theme,
+    theme_classic,
+)
+
+runs_by_year_df = pl.read_csv("../data/derived/runs_by_year.csv")
+runs_by_month_df = pl.read_csv(
+    "../data/derived/runs_by_month.csv", try_parse_dates=True
+)
+heatmap_text_threshold = runs_by_month_df["total_distance_miles"].quantile(0.7)
+pace_text_threshold = runs_by_month_df[
+    "aggregate_moving_pace_seconds_per_mile"
+].quantile(0.3)
+pace_seconds = pl.col("aggregate_moving_pace_seconds_per_mile").round().cast(pl.Int64)
+monthly_heatmap_df = runs_by_month_df.with_columns(
+    pl.col("month").dt.year().alias("year"),
+    pl.col("month").dt.month().alias("month_number"),
+    pl.col("total_distance_miles").round().cast(pl.Int64).alias("distance_label"),
+    pl.concat_str(
+        [
+            (pace_seconds // 60).cast(pl.String),
+            pl.lit(":"),
+            (pace_seconds % 60).cast(pl.String).str.pad_start(2, "0"),
+        ]
+    ).alias("pace_label"),
+    pl.when(pl.col("total_distance_miles") >= heatmap_text_threshold)
+    .then(pl.lit("light"))
+    .otherwise(pl.lit("dark"))
+    .alias("distance_text_color"),
+    pl.when(pl.col("aggregate_moving_pace_seconds_per_mile") <= pace_text_threshold)
+    .then(pl.lit("light"))
+    .otherwise(pl.lit("dark"))
+    .alias("pace_text_color"),
+)
+
+age_40_date = date(2023, 11, 9)
+age_40_year = age_40_date.year + (
+    (age_40_date - date(age_40_date.year, 1, 1)).days
+    / (date(age_40_date.year + 1, 1, 1) - date(age_40_date.year, 1, 1)).days
+)
+
+
+def format_pace_labels(values):
+    labels = []
+    for value in values:
+        minutes, seconds = divmod(round(value), 60)
+        labels.append(f"{minutes}:{seconds:02d}")
+    return labels
+
+
+def add_age_40_marker(chart, period: str):
+    if period not in {"year", "month"}:
+        return chart
+
+    xintercept = age_40_year if period == "year" else age_40_date
+    return chart + geom_vline(
+        xintercept=xintercept,
+        color="#343a40",
+        linetype="dashed",
+        size=0.8,
+    )
+
+
+def distance_chart(data: pl.DataFrame, period: str):
+    chart = (
+        ggplot(data, aes(x=period, y="total_distance_miles"))
+        + geom_area(fill="#0d6efd", alpha=0.14)
+        + geom_line(color="#0d6efd", size=1)
+        + scale_y_continuous(
+            labels=lambda values: [f"{value:,.0f}" for value in values]
+        )
+        + labs(
+            x=None,
+            y="Distance (mi)",
+            caption=(
+                "Dashed line: turned 40 on November 9, 2023."
+                if period in {"year", "month"}
+                else None
+            ),
+        )
+        + theme_classic()
+    )
+    if period == "year":
+        chart += geom_point(color="#0d6efd", size=2)
+    return add_age_40_marker(chart, period)
+
+
+def pace_chart(data: pl.DataFrame, period: str):
+    chart = (
+        ggplot(data, aes(x=period, y="aggregate_moving_pace_seconds_per_mile"))
+        + geom_line(color="#0dcaf0", size=1)
+        + scale_y_reverse(labels=format_pace_labels)
+        + labs(
+            x=None,
+            y="Moving pace (min/mi)",
+            caption=(
+                "Dashed line: turned 40 on November 9, 2023."
+                if period in {"year", "month"}
+                else None
+            ),
+        )
+        + theme_classic()
+    )
+    if period == "year":
+        chart += geom_point(color="#0dcaf0", size=2)
+    return add_age_40_marker(chart, period)
+```
+
+## Year
+
+### Distance
+
+```{python}
+distance_chart(runs_by_year_df, "year")
+```
+
+### Pace
+
+```{python}
+pace_chart(runs_by_year_df, "year")
+```
+
+## Month
+
+### Distance
+
+```{python}
+distance_chart(runs_by_month_df, "month")
+```
+
+### Pace
+
+```{python}
+pace_chart(runs_by_month_df, "month")
+```
+
+## Monthly Heatmaps
+
+### Mileage by Calendar Month
+
+```{python}
+month_labels = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+heatmap_years = monthly_heatmap_df["year"].unique().sort().to_list()
+
+(
+    ggplot(
+        monthly_heatmap_df,
+        aes(
+            x="year",
+            y="month_number",
+            fill="total_distance_miles",
+        ),
+    )
+    + geom_tile(width=0.95, height=0.95)
+    + geom_text(
+        aes(label="distance_label", color="distance_text_color"),
+        size=6,
+        show_legend=False,
+    )
+    + scale_fill_gradient(low="#edf4ff", high="#0d6efd")
+    + scale_color_manual(values={"dark": "#1f2937", "light": "white"})
+    + scale_x_continuous(breaks=heatmap_years[::2])
+    + scale_y_reverse(breaks=range(1, 13), labels=month_labels)
+    + labs(
+        x="Year",
+        y="Month",
+        fill="Distance (mi)",
+        caption="Each cell shows total miles; blank cells fall outside the recorded range.",
+    )
+    + theme_classic()
+    + theme(axis_ticks=element_blank())
+)
+```
+
+### Pace by Calendar Month
+
+```{python}
+(
+    ggplot(
+        monthly_heatmap_df,
+        aes(
+            x="year",
+            y="month_number",
+            fill="aggregate_moving_pace_seconds_per_mile",
+        ),
+    )
+    + geom_tile(width=0.95, height=0.95)
+    + geom_text(
+        aes(label="pace_label", color="pace_text_color"),
+        size=6,
+        show_legend=False,
+    )
+    + scale_fill_gradient(
+        low="#0d6efd",
+        high="#b8daff",
+        labels=format_pace_labels,
+    )
+    + scale_color_manual(values={"dark": "#1f2937", "light": "white"})
+    + scale_x_continuous(breaks=heatmap_years[::2])
+    + scale_y_reverse(breaks=range(1, 13), labels=month_labels)
+    + labs(
+        x="Year",
+        y="Month",
+        fill="Moving pace",
+        caption="Each cell shows aggregate moving pace; darker is faster.",
+    )
+    + theme_classic()
+    + theme(axis_ticks=element_blank())
+)
+```
