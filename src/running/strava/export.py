@@ -171,6 +171,16 @@ def _detail_column(header: list[str], base: str) -> str:
     return f"{base}.1" if f"{base}.1" in header else base
 
 
+def _preferred_optional_float(
+    row: dict[str, str], header: list[str], field: str, row_number: int
+) -> float | None:
+    column = _detail_column(header, field)
+    value = _optional_float(row.get(column), field=column, row_number=row_number)
+    if value is None and column != field:
+        return _optional_float(row.get(field), field=field, row_number=row_number)
+    return value
+
+
 def _safe_track_path(export_directory: Path, filename: str, row_number: int) -> Path:
     root = export_directory.resolve()
     candidate = (root / filename).resolve()
@@ -222,7 +232,9 @@ def _check_duplicate_semantics(
                 )
 
 
-def load_export_directory(export_directory: Path) -> ParsedExport:
+def load_export_directory(
+    export_directory: Path, *, load_tracks: bool = True
+) -> ParsedExport:
     """Load running rows and source counts from an extracted Strava export."""
     export_directory = Path(export_directory)
     csv_path = export_directory / "activities.csv"
@@ -293,7 +305,7 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
                 elapsed_value = row.get("Elapsed Time")
 
             filename = _optional_text(row.get("Filename"))
-            if filename is not None:
+            if filename is not None and load_tracks:
                 track_path = _safe_track_path(export_directory, filename, row_number)
 
             max_hr = _optional_float(
@@ -331,11 +343,6 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
                         field="Elevation Gain",
                         row_number=row_number,
                     ),
-                    max_speed_mps=_optional_float(
-                        row.get("Max Speed"),
-                        field="Max Speed",
-                        row_number=row_number,
-                    ),
                     average_heart_rate_bpm=_optional_float(
                         row.get("Average Heart Rate"),
                         field="Average Heart Rate",
@@ -345,10 +352,13 @@ def load_export_directory(export_directory: Path) -> ParsedExport:
                     calories=_optional_float(
                         row.get("Calories"), field="Calories", row_number=row_number
                     ),
+                    relative_effort=_preferred_optional_float(
+                        row, header, "Relative Effort", row_number
+                    ),
                     source=f"activities.csv row {row_number}",
                 )
             )
-            if filename is not None:
+            if filename is not None and load_tracks:
                 track_jobs.append((run_index, track_path))
 
     if track_jobs:
@@ -392,10 +402,10 @@ def _run_preference(run: Run) -> tuple[int, str]:
         for value in (
             run.name,
             run.elevation_gain_m,
-            run.max_speed_mps,
             run.average_heart_rate_bpm,
             run.max_heart_rate_bpm,
             run.calories,
+            run.relative_effort,
             run.start_lat,
             run.start_lon,
             run.end_lat,

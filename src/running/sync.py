@@ -19,6 +19,9 @@ from running.strava.export import (
 
 RAW_ROOT = PROJECT_ROOT / "data/raw/strava"
 GEOCODING_CACHE_PATH = PROJECT_ROOT / "data/private/geocoding.csv"
+SOURCE_METADATA_FIELDS = (
+    "relative_effort",
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,14 @@ def _merge_run(existing: Run | None, exported: Run) -> Run:
     """Prefer export data while retaining useful values the export omitted."""
     if existing is None:
         return exported
+    source_metadata = {
+        field: (
+            getattr(exported, field)
+            if getattr(exported, field) is not None
+            else getattr(existing, field)
+        )
+        for field in SOURCE_METADATA_FIELDS
+    }
     return replace(
         exported,
         name=exported.name or existing.name,
@@ -47,11 +58,6 @@ def _merge_run(existing: Run | None, exported: Run) -> Run:
             exported.elevation_gain_m
             if exported.elevation_gain_m is not None
             else existing.elevation_gain_m
-        ),
-        max_speed_mps=(
-            exported.max_speed_mps
-            if exported.max_speed_mps is not None
-            else existing.max_speed_mps
         ),
         average_heart_rate_bpm=(
             exported.average_heart_rate_bpm
@@ -66,6 +72,7 @@ def _merge_run(existing: Run | None, exported: Run) -> Run:
         calories=(
             exported.calories if exported.calories is not None else existing.calories
         ),
+        **source_metadata,
         start_lat=(
             exported.start_lat if exported.start_lat is not None else existing.start_lat
         ),

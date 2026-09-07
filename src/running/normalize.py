@@ -34,10 +34,10 @@ class Run:
     moving_time_s: int
     elapsed_time_s: int
     elevation_gain_m: float | None
-    max_speed_mps: float | None
     average_heart_rate_bpm: float | None
     max_heart_rate_bpm: float | None
     calories: float | None
+    relative_effort: float | None = None
     sport_type: str = "Run"
     timezone: str | None = None
     start_lat: float | None = None
@@ -156,10 +156,10 @@ def normalize_run(
     moving_time_s: object,
     elapsed_time_s: object,
     elevation_gain_m: object = None,
-    max_speed_mps: object = None,
     average_heart_rate_bpm: object = None,
     max_heart_rate_bpm: object = None,
     calories: object = None,
+    relative_effort: object = None,
     sport_type: object = None,
     timezone: object = None,
     start_lat: object = None,
@@ -212,7 +212,6 @@ def normalize_run(
         elevation_gain_m=_optional_float(
             elevation_gain_m, field="elevation gain", source=source
         ),
-        max_speed_mps=_optional_float(max_speed_mps, field="max speed", source=source),
         average_heart_rate_bpm=_optional_float(
             average_heart_rate_bpm, field="average heart rate", source=source
         ),
@@ -220,6 +219,9 @@ def normalize_run(
             max_heart_rate_bpm, field="max heart rate", source=source
         ),
         calories=_optional_float(calories, field="calories", source=source),
+        relative_effort=_optional_float(
+            relative_effort, field="relative effort", source=source
+        ),
         sport_type=_optional_text(sport_type) or "Run",
         timezone=_timezone(timezone, source=source),
         start_lat=normalized_start_lat,
@@ -248,53 +250,83 @@ def run_to_record(run: Run) -> dict[str, object]:
         else None
     )
     return {
-        "activity_id": run.activity_id,
-        "local_date": local_start.date().isoformat() if local_start else None,
-        "start_datetime": timestamp,
-        "local_start_datetime": (
-            local_start.isoformat(timespec="seconds") if local_start else None
-        ),
-        "timezone": run.timezone,
-        "name": run.name,
-        "sport_type": run.sport_type,
-        "distance_m": _rounded(run.distance_m, 1),
-        "moving_time_s": run.moving_time_s,
-        "elapsed_time_s": run.elapsed_time_s,
-        "elevation_gain_m": _rounded(run.elevation_gain_m, 1),
-        "max_speed_mps": _rounded(run.max_speed_mps, 6),
+        "strava_activity_id": run.activity_id,
+        "activity_date_local": local_start.date().isoformat() if local_start else None,
+        "start_datetime_utc": timestamp,
+        "timezone_iana": run.timezone,
+        "activity_name": run.name,
+        "strava_relative_effort": _rounded(run.relative_effort, 1),
+        "distance_miles": _rounded(meters_to_miles(run.distance_m), 2),
+        "moving_time_seconds": run.moving_time_s,
+        "elapsed_time_seconds": run.elapsed_time_s,
+        "elevation_gain_meters": _rounded(run.elevation_gain_m, 1),
         "average_heart_rate_bpm": _rounded(run.average_heart_rate_bpm, 1),
         "max_heart_rate_bpm": _rounded(run.max_heart_rate_bpm, 1),
-        "calories": _rounded(run.calories, 1),
+        "calories_kcal": _rounded(run.calories, 1),
         "start_city": run.start_city,
         "start_locality": run.start_locality,
-        "start_state": run.start_state,
-        "start_state_code": run.start_state_code,
+        "start_region": run.start_state,
+        "start_region_code": run.start_state_code,
         "start_country": run.start_country,
         "start_country_code": run.start_country_code,
     }
 
 
+def _record_value(record: Mapping[str, object], *fields: str) -> object:
+    return next(
+        (record.get(field) for field in fields if record.get(field) not in (None, "")),
+        None,
+    )
+
+
 def record_to_run(record: Mapping[str, object]) -> Run:
     """Reload canonical values from the public CSV."""
-    activity_id = record.get("activity_id")
+    activity_id = _record_value(record, "strava_activity_id", "activity_id")
+    distance_miles = record.get("distance_miles")
+    distance_m = (
+        _finite_float(
+            distance_miles,
+            field="distance_miles",
+            source=f"public CSV activity {activity_id!r}",
+        )
+        * METERS_PER_MILE
+        if distance_miles not in (None, "")
+        else record.get("distance_m")
+    )
     return normalize_run(
         activity_id=activity_id,
-        start_datetime=record.get("start_datetime"),  # type: ignore[arg-type]
-        name=record.get("name", ""),
-        distance_m=record.get("distance_m"),
-        moving_time_s=record.get("moving_time_s"),
-        elapsed_time_s=record.get("elapsed_time_s"),
-        elevation_gain_m=record.get("elevation_gain_m"),
-        max_speed_mps=record.get("max_speed_mps"),
+        start_datetime=(  # type: ignore[arg-type]
+            record.get("start_datetime_utc") or record.get("start_datetime")
+        ),
+        name=_record_value(record, "activity_name", "name"),
+        distance_m=distance_m,
+        moving_time_s=_record_value(record, "moving_time_seconds", "moving_time_s"),
+        elapsed_time_s=_record_value(record, "elapsed_time_seconds", "elapsed_time_s"),
+        elevation_gain_m=(
+            record.get("elevation_gain_meters")
+            if record.get("elevation_gain_meters") not in (None, "")
+            else record.get("elevation_gain_m")
+        ),
         average_heart_rate_bpm=record.get("average_heart_rate_bpm"),
         max_heart_rate_bpm=record.get("max_heart_rate_bpm"),
-        calories=record.get("calories"),
+        calories=(
+            record.get("calories_kcal")
+            if record.get("calories_kcal") not in (None, "")
+            else record.get("calories")
+        ),
+        relative_effort=(
+            record.get("strava_relative_effort")
+            if record.get("strava_relative_effort") not in (None, "")
+            else record.get("relative_effort")
+        ),
         sport_type=record.get("sport_type") or record.get("activity_type"),
-        timezone=record.get("timezone"),
+        timezone=_record_value(record, "timezone_iana", "timezone"),
         start_city=record.get("start_city"),
         start_locality=record.get("start_locality"),
-        start_state=record.get("start_state"),
-        start_state_code=record.get("start_state_code"),
+        start_state=_record_value(record, "start_region", "start_state"),
+        start_state_code=_record_value(
+            record, "start_region_code", "start_state_code"
+        ),
         start_country=record.get("start_country"),
         start_country_code=record.get("start_country_code"),
         source=f"public CSV activity {activity_id!r}",

@@ -8,7 +8,6 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from running.normalize import (
-    RUNNING_SPORT_TYPES,
     Run,
     record_to_run,
     run_to_record,
@@ -19,25 +18,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_PATH = PROJECT_ROOT / "data/public/runs.csv"
 
 CSV_COLUMNS = (
-    "activity_id",
-    "local_date",
-    "start_datetime",
-    "local_start_datetime",
-    "timezone",
-    "name",
-    "sport_type",
-    "distance_m",
-    "moving_time_s",
-    "elapsed_time_s",
-    "elevation_gain_m",
-    "max_speed_mps",
+    "strava_activity_id",
+    "activity_date_local",
+    "start_datetime_utc",
+    "timezone_iana",
+    "activity_name",
+    "strava_relative_effort",
+    "distance_miles",
+    "moving_time_seconds",
+    "elapsed_time_seconds",
+    "elevation_gain_meters",
     "average_heart_rate_bpm",
     "max_heart_rate_bpm",
-    "calories",
+    "calories_kcal",
     "start_city",
     "start_locality",
-    "start_state",
-    "start_state_code",
+    "start_region",
+    "start_region_code",
     "start_country",
     "start_country_code",
 )
@@ -45,22 +42,31 @@ CSV_COLUMNS = (
 
 def validate_records(records: Iterable[dict[str, object]]) -> None:
     records = list(records)
-    ids = [record["activity_id"] for record in records]
+    ids = [record["strava_activity_id"] for record in records]
     if len(ids) != len(set(ids)):
         raise ValueError("activity IDs must be unique")
 
     for record in records:
-        label = f"activity {record['activity_id']}"
-        if record["sport_type"] not in RUNNING_SPORT_TYPES:
-            raise ValueError(f"{label}: non-running sport type in output")
-        for field in ("distance_m", "moving_time_s", "elapsed_time_s"):
+        label = f"activity {record['strava_activity_id']}"
+        for field in (
+            "distance_miles",
+            "moving_time_seconds",
+            "elapsed_time_seconds",
+            "elevation_gain_meters",
+            "strava_relative_effort",
+        ):
             value = record[field]
             if value is not None and float(value) < 0:
                 raise ValueError(f"{label}: {field} must be non-negative")
 
-    order = [(record["start_datetime"], record["activity_id"]) for record in records]
+    order = [
+        (record["start_datetime_utc"], record["strava_activity_id"])
+        for record in records
+    ]
     if order != sorted(order):
-        raise ValueError("records must be ordered by start_datetime and activity_id")
+        raise ValueError(
+            "records must be ordered by start_datetime_utc and strava_activity_id"
+        )
 
 
 def _csv_text(records: list[dict[str, object]]) -> str:
@@ -89,17 +95,46 @@ def load_public_runs(path: Path = OUTPUT_PATH) -> list[Run]:
         return []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
-        # The newer locality/time columns are optional while migrating an older
-        # public CSV; write_runs always emits the complete current schema.
+        # Public names have evolved; accept the previous schema while migration
+        # rewrites it to the complete current schema.
         migration_columns = {
-            "local_date",
-            "local_start_datetime",
-            "timezone",
-            "sport_type",
+            "activity_date_local",
+            "activity_name",
+            "calories_kcal",
+            "distance_miles",
+            "elapsed_time_seconds",
+            "elevation_gain_meters",
+            "moving_time_seconds",
             "start_locality",
-            "start_state_code",
+            "start_region",
+            "start_region_code",
+            "start_datetime_utc",
+            "strava_activity_id",
+            "strava_relative_effort",
+            "timezone_iana",
         }
         missing = set(CSV_COLUMNS) - migration_columns - set(reader.fieldnames or ())
+        if "distance_miles" not in (reader.fieldnames or ()) and "distance_m" not in (
+            reader.fieldnames or ()
+        ):
+            missing.add("distance_miles")
+        if "start_datetime_utc" not in (
+            reader.fieldnames or ()
+        ) and "start_datetime" not in (reader.fieldnames or ()):
+            missing.add("start_datetime_utc")
+        renamed_required_columns = {
+            "strava_activity_id": "activity_id",
+            "activity_name": "name",
+            "moving_time_seconds": "moving_time_s",
+            "elapsed_time_seconds": "elapsed_time_s",
+            "elevation_gain_meters": "elevation_gain_m",
+            "calories_kcal": "calories",
+        }
+        for current, legacy in renamed_required_columns.items():
+            if current not in (reader.fieldnames or ()) and legacy not in (
+                reader.fieldnames or ()
+            ):
+                missing.add(current)
         if missing:
             raise ValueError(
                 "public CSV is missing columns: " + ", ".join(sorted(missing))
