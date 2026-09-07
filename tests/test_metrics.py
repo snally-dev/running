@@ -37,9 +37,18 @@ def test_run_metric_frames_are_consistent() -> None:
 def test_race_personal_records_are_timed_and_uncluttered() -> None:
     metrics = runpy.run_path(str(PROJECT_ROOT / "scripts/race_metrics.py"))
     personal_records = metrics["personal_records_df"]
+    over_40_personal_records = metrics["over_40_personal_records_df"]
 
     assert personal_records["distance_category"].n_unique() == personal_records.height
     assert personal_records["finish_duration_seconds"].null_count() == 0
     assert "bib_number" not in personal_records.columns
     assert metrics["overview_df"]["region_count"].item() == 12
     assert personal_records.select(pl.all().is_null().sum()).sum_horizontal().item() == 0
+    assert over_40_personal_records["race_date"].min() >= metrics[
+        "AGE_40_START_DATE"
+    ]
+    assert (
+        over_40_personal_records["distance_category"].n_unique()
+        == over_40_personal_records.height
+    )
+    assert over_40_personal_records["finish_duration_seconds"].null_count() == 0
