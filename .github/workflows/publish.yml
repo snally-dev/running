@@ -1,15 +1,13 @@
-name: Validate running data
+name: Publish to GitHub Pages
 
 on:
   workflow_dispatch:
-  push:
-  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
