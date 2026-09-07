@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -7,6 +8,7 @@ import polars as pl
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RACES_PATH = PROJECT_ROOT / "data/public/races.csv"
 OUTPUT_DIR = PROJECT_ROOT / "data/derived"
+AGE_40_START_DATE = date(2023, 11, 9)
 
 DISTANCE_CATEGORY_ORDER = (
     "MILE",
@@ -74,16 +76,43 @@ personal_records_df = (
 )
 
 
+over_40_personal_records_df = (
+    races_df.filter(
+        (pl.col("finish_duration_seconds").is_not_null())
+        & (pl.col("race_date") >= AGE_40_START_DATE)
+    )
+    .sort("finish_duration_seconds")
+    .group_by("distance_category", maintain_order=True)
+    .first()
+    .sort("distance_category")
+    .select(
+        "distance_category",
+        "race_date",
+        "race_name",
+        "race_city",
+        "race_region_code",
+        "finish_duration_seconds",
+        "pace_seconds_per_mile",
+        "overall_place",
+        "overall_field_size",
+        "gender_place",
+        "gender_field_size",
+        "division_place",
+        "division_field_size",
+        "strava_id",
+    )
+)
+
+
 def write_outputs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     outputs = {
         "race_overview.csv": overview_df,
         "race_personal_records.csv": personal_records_df,
+        "race_over_40_personal_records.csv": over_40_personal_records_df,
     }
     for filename, frame in outputs.items():
-        frame.with_columns(pl.col(pl.Float64).round(2)).write_csv(
-            OUTPUT_DIR / filename
-        )
+        frame.with_columns(pl.col(pl.Float64).round(2)).write_csv(OUTPUT_DIR / filename)
 
 
 if __name__ == "__main__":
