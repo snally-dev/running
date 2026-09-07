@@ -51,56 +51,43 @@ overview_df = races_df.select(
 )
 
 
-personal_records_df = (
-    races_df.filter(pl.col("finish_duration_seconds").is_not_null())
-    .sort("finish_duration_seconds")
-    .group_by("distance_category", maintain_order=True)
-    .first()
-    .sort("distance_category")
-    .select(
-        "distance_category",
-        "race_date",
-        "race_name",
-        "race_city",
-        "race_region_code",
-        "finish_duration_seconds",
-        "pace_seconds_per_mile",
-        "overall_place",
-        "overall_field_size",
-        "gender_place",
-        "gender_field_size",
-        "division_place",
-        "division_field_size",
-        "strava_id",
+def get_personal_records(races_df: pl.DataFrame) -> pl.DataFrame:
+    return (
+        races_df.filter(pl.col("finish_duration_seconds").is_not_null())
+        .sort("finish_duration_seconds")
+        .group_by("distance_category", maintain_order=True)
+        .first()
+        .select(
+            "distance_category",
+            "race_date",
+            "race_name",
+            "finish_duration_seconds",
+            "pace_seconds_per_mile",
+            "strava_id",
+        )
     )
+
+
+personal_records_df = get_personal_records(races_df)
+
+over_40_personal_records_df = get_personal_records(
+    races_df.filter(pl.col("race_date") >= AGE_40_START_DATE)
 )
 
-
-over_40_personal_records_df = (
-    races_df.filter(
-        (pl.col("finish_duration_seconds").is_not_null())
-        & (pl.col("race_date") >= AGE_40_START_DATE)
+personal_records_comparison_df = (
+    personal_records_df.join(
+        over_40_personal_records_df,
+        on="distance_category",
+        how="left",
+        suffix="_over_40",
     )
-    .sort("finish_duration_seconds")
-    .group_by("distance_category", maintain_order=True)
-    .first()
+    .with_columns(
+        (
+            pl.col("finish_duration_seconds_over_40")
+            - pl.col("finish_duration_seconds")
+        ).alias("gap_seconds")
+    )
     .sort("distance_category")
-    .select(
-        "distance_category",
-        "race_date",
-        "race_name",
-        "race_city",
-        "race_region_code",
-        "finish_duration_seconds",
-        "pace_seconds_per_mile",
-        "overall_place",
-        "overall_field_size",
-        "gender_place",
-        "gender_field_size",
-        "division_place",
-        "division_field_size",
-        "strava_id",
-    )
 )
 
 
@@ -108,8 +95,7 @@ def write_outputs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     outputs = {
         "race_overview.csv": overview_df,
-        "race_personal_records.csv": personal_records_df,
-        "race_over_40_personal_records.csv": over_40_personal_records_df,
+        "race_personal_records.csv": personal_records_comparison_df,
     }
     for filename, frame in outputs.items():
         frame.with_columns(pl.col(pl.Float64).round(2)).write_csv(OUTPUT_DIR / filename)
