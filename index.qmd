@@ -1,0 +1,151 @@
+---
+title: "Overview"
+---
+
+```{python}
+from datetime import date
+
+import polars as pl
+from plotnine import (
+    aes,
+    geom_col,
+    geom_text,
+    ggplot,
+    labs,
+    scale_fill_gradient,
+    theme_classic,
+)
+
+run_overview_df = pl.read_csv("data/derived/run_overview.csv", try_parse_dates=True)
+runs_by_year_df = pl.read_csv("data/derived/runs_by_year.csv")
+
+run_overview = run_overview_df.row(0, named=True)
+first_run_date = run_overview["first_run_date"]
+latest_run_date = run_overview["latest_run_date"]
+
+
+def format_date(value: date) -> str:
+    return value.strftime("%B %d, %Y").replace(" 0", " ")
+
+
+def format_pace(seconds: float) -> str:
+    minutes, remaining_seconds = divmod(round(seconds), 60)
+    return f"{minutes}:{remaining_seconds:02d}/mi"
+```
+
+
+## Metrics 
+
+```{python}
+#| content: valuebox
+#| title: "Runs"
+#| icon: activity
+#| color: primary
+dict(
+  value=f"{run_overview['run_count']:,}"
+)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Distance"
+#| icon: map
+#| color: primary
+dict(
+  value=f"{round(run_overview['total_distance_miles']):,} mi"
+)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Moving Time"
+#| icon: clock
+#| color: primary
+dict(
+  value=f"{round(run_overview['total_moving_hours']):,} h"
+)
+```
+
+
+```{python}
+#| content: valuebox
+#| title: "Overall Pace"
+#| icon: speedometer2
+#| color: info
+dict(
+  value=format_pace(run_overview["aggregate_moving_pace_seconds_per_mile"])
+)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Avg. Run"
+#| icon: rulers
+#| color: info
+dict(
+  value=f"{run_overview['average_distance_miles']:.2f} mi"
+)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Regions"
+#| icon: geo-alt-fill
+#| color: secondary
+dict(
+  value=run_overview["region_count"]
+)
+```
+
+## Yearly
+
+```{python}
+runs_by_year_df = runs_by_year_df.with_columns(
+    pl.col("year").cast(pl.Int64),
+    pl.col("total_distance_miles").cast(pl.Float64),
+)
+
+latest_year_note = (
+    "year to date"
+    if latest_run_date.year == date.today().year
+    else "latest recorded year"
+)
+
+(
+    ggplot(
+        runs_by_year_df,
+        aes(
+            x="year",
+            y="total_distance_miles",
+            fill="aggregate_moving_pace_seconds_per_mile",
+        ),
+    )
+    + geom_col(width=0.8)
+    + geom_text(
+        aes(label="total_distance_miles"),
+        va="bottom",
+        size=6,
+        format_string="{:,.0f} mi",
+    )
+    + scale_fill_gradient(
+        low="#0d6efd",
+        high="#b8daff",
+        labels=lambda values: [format_pace(value) for value in values],
+    )
+    + labs(
+        title="Distance by Year",
+        subtitle=(
+            f"{latest_run_date.year} is the {latest_year_note}, "
+            f"through {format_date(latest_run_date)}"
+        ),
+        x="Year",
+        y="Distance (mi)",
+        fill="Moving pace",
+    )
+    + theme_classic()
+)
+```
+
+## Footer
+
+Data covers `{python} format_date(first_run_date)` through `{python} format_date(latest_run_date)`.
