@@ -99,6 +99,25 @@ The manually curated race-results table at `data/public/races.csv` uses:
 | `finish_duration_seconds` | Published finish duration as numeric seconds |
 | `bib_number` | Optional published bib identifier |
 
+## Generate Quarto inputs
+
+Generate the local analysis tables with:
+
+```console
+uv run python scripts/run_metrics.py
+uv run python scripts/race_metrics.py
+```
+
+The scripts write reproducible CSVs to the ignored `data/derived/` directory.
+Measurements remain numeric so Quarto or Great Tables can format durations,
+paces, percentages, and decimal precision without losing correct numeric sorting.
+
+Run pace is derived from moving time and distance because Strava exports average
+speed rather than ordinary pace. Aggregate moving pace is total moving seconds
+divided by total miles, equivalent to treating the selected activities as one
+combined run. This prevents short runs from receiving the same weight as long
+runs. Zero-distance activities have no pace and are excluded from that metric.
+
 The Strava ZIP files and private geocoding cache are intentionally ignored by
 Git. Commit only the regenerated public CSV and application changes. GitHub
 Actions validates committed data and code; it does not contact Strava or download
