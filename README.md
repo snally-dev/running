@@ -43,10 +43,61 @@ cached in the ignored
 are reused. Set `BIGDATACLOUD_API_KEY` only when an exported run has coordinates
 whose location is not already known.
 
-The public CSV keeps canonical metric measurements and exact integer seconds.
-Consumers derive miles, feet, speed, pace, duration displays, and distance
-classifications as needed. UTC timestamps are retained alongside IANA timezones
-and derived local timestamps when a start coordinate is available.
+The public CSV stores distance in miles, while other source measurements remain
+metric, and keeps exact integer seconds. Consumers derive feet, speed, pace,
+duration displays, and distance classifications as needed. `start_datetime_utc`
+is the canonical instant; IANA timezones are retained alongside derived local
+dates when a start coordinate is available.
+
+Useful structured activity metadata from `activities.csv` is retained when
+available. Columns that would be more than 50% empty or exactly zero for at least
+50% of runs are omitted, as are free-form descriptions and private notes,
+athlete weight, source filenames, opaque provider codes, noisy peak measurements,
+and measurements that can be reliably derived from existing columns.
+
+The public schema is deliberately small and explicit:
+
+| Column | Purpose |
+| --- | --- |
+| `strava_activity_id` | Stable source identifier and join key |
+| `activity_date_local` | Local calendar date for daily grouping |
+| `start_datetime_utc` | Unambiguous activity start instant |
+| `timezone_iana` | IANA zone used to interpret the local date |
+| `activity_name` | Human context supplied in Strava |
+| `strava_relative_effort` | Strava's source-specific training-load score |
+| `distance_miles` | Run distance |
+| `moving_time_seconds` | Time moving |
+| `elapsed_time_seconds` | Total time, including stops |
+| `elevation_gain_meters` | Standard measure of route hilliness |
+| `average_heart_rate_bpm` | Sustained cardiovascular intensity |
+| `max_heart_rate_bpm` | Peak cardiovascular intensity |
+| `calories_kcal` | Strava's estimated energy expenditure |
+| `start_city` | City-level location grouping |
+| `start_locality` | More specific locality or neighborhood grouping |
+| `start_region` | Human-readable state, province, or region |
+| `start_region_code` | Stable subdivision code |
+| `start_country` | Human-readable country |
+| `start_country_code` | Stable ISO country code |
+
+The manually curated race-results table at `data/public/races.csv` uses:
+
+| Column | Purpose |
+| --- | --- |
+| `race_date` | Actual local race date |
+| `strava_id` | Optional link to `runs.csv`'s `strava_activity_id` |
+| `race_name` | Published event name |
+| `distance_category` | Standard race distance or challenge category |
+| `race_city` | Event city |
+| `race_region_code` | Event state or region code |
+| `overall_place` | Overall finishing place |
+| `overall_field_size` | Overall finisher field size |
+| `gender_place` | Gender-group finishing place |
+| `gender_field_size` | Gender-group field size |
+| `division_place` | Age-division finishing place |
+| `division_field_size` | Age-division field size |
+| `pace_seconds_per_mile` | Published average pace as numeric seconds |
+| `finish_duration_seconds` | Published finish duration as numeric seconds |
+| `bib_number` | Optional published bib identifier |
 
 The Strava ZIP files and private geocoding cache are intentionally ignored by
 Git. Commit only the regenerated public CSV and application changes. GitHub
