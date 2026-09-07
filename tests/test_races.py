@@ -67,7 +67,8 @@ def test_linked_races_reference_runs_on_the_same_local_date() -> None:
     unlinked = [race for race in races if not race["strava_id"]]
     assert len(unlinked) == 7
     assert any(
-        race["race_name"] == "Goofy Challenge"
+        race["race_name"]
+        == "Walt Disney World Goofy's Race and a Half Challenge"
         and race["distance_category"] == "CHALLENGE"
         for race in unlinked
     )
