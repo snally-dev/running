@@ -1,0 +1,23 @@
+project:
+  type: website
+  title: "Running"
+
+website:
+  title: "Running"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Overview
+      - href: pages/history.qmd
+        text: History
+      - href: pages/places.qmd
+        text: Places
+      - href: pages/races.qmd
+        text: Races
+
+format:
+  dashboard:
+    toc: true
+    nav-buttons:
+      - icon: github
+        href: https://github.com/snally-dev/running
