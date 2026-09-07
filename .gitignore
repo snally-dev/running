@@ -216,6 +216,9 @@ data/raw/strava/*
 # Private reverse-geocoding cache.
 data/private/
 
+# Reproducible local metric outputs used by Quarto.
+data/derived/
+
 # PyPI configuration file
 .pypirc
 
