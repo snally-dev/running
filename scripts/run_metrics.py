@@ -209,6 +209,25 @@ runs_by_month_df = (
     .sort("month")
 )
 
+runs_by_week = (
+    runs_df.with_columns(pl.col("activity_date").dt.truncate("1w").alias("week"))
+    .group_by("week")
+    .agg(
+        pl.len().alias("run_count"),
+        pl.col("activity_date").n_unique().alias("active_day_count"),
+        pl.col("distance_miles").sum().alias("total_distance_miles"),
+        pl.col("distance_miles").mean().alias("average_distance_miles"),
+        pl.col("distance_miles").max().alias("longest_distance_miles"),
+        (pl.col("moving_time_seconds").sum() / 3600).alias("total_moving_hours"),
+        (pl.col("elapsed_time_seconds").sum() / 3600).alias("total_elapsed_hours"),
+        aggregate_moving_pace_seconds_per_mile.alias(
+            "aggregate_moving_pace_seconds_per_mile"
+        ),
+        pl.col("elevation_gain_feet").sum().alias("total_elevation_gain_feet"),
+    )
+    .sort("week")
+)
+
 
 def write_outputs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -220,6 +239,7 @@ def write_outputs() -> None:
         "runs_by_country.csv": runs_by_country_df,
         "runs_by_year.csv": runs_by_year_df,
         "runs_by_month.csv": runs_by_month_df,
+        "runs_by_week.csv": runs_by_week,
     }
     for filename, frame in outputs.items():
         frame.with_columns(pl.col(pl.Float64).round(2)).write_csv(OUTPUT_DIR / filename)
