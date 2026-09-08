@@ -22,6 +22,7 @@ runs_by_year_df = pl.read_csv("data/derived/runs_by_year.csv")
 run_overview = run_overview_df.row(0, named=True)
 first_run_date = run_overview["first_run_date"]
 latest_run_date = run_overview["latest_run_date"]
+duration = f"{((latest_run_date - first_run_date).days):,} days"
 
 
 def format_date(value: date) -> str:
@@ -89,11 +90,11 @@ dict(
 
 ```{python}
 #| content: valuebox
-#| title: "Regions"
+#| title: "US States"
 #| icon: geo-alt-fill
 #| color: secondary
 dict(
-  value=run_overview["region_count"]
+  value=run_overview["us_state_count"]
 )
 ```
 
@@ -148,4 +149,4 @@ latest_year_note = (
 
 ## Footer
 
-Data covers `{python} format_date(first_run_date)` through `{python} format_date(latest_run_date)`.
+Data covers `{python} format_date(first_run_date)` through `{python} format_date(latest_run_date)` (`{python} duration`).
