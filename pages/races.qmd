@@ -2,3 +2,114 @@
 title: "Races"
 ---
 
+```{python}
+import polars as pl
+from great_tables import GT, md, html, loc, style
+import polars.selectors as cs
+
+
+def format_duration(column: str) -> pl.Expr:
+    seconds = pl.col(column).round().cast(pl.Int64)
+
+    return pl.concat_str(
+        [
+            (seconds // 3600).cast(pl.String),
+            pl.lit(":"),
+            ((seconds % 3600) // 60).cast(pl.String).str.zfill(2),
+            pl.lit(":"),
+            (seconds % 60).cast(pl.String).str.zfill(2),
+        ]
+    )
+
+
+def format_pace(column: str) -> pl.Expr:
+    seconds = pl.col(column).round().cast(pl.Int64)
+
+    return pl.concat_str(
+        [
+            (seconds // 60).cast(pl.String),
+            pl.lit(":"),
+            (seconds % 60).cast(pl.String).str.zfill(2),
+            pl.lit("/mi"),
+        ]
+    )
+
+
+race_personal_records = pl.read_csv(
+    "../data/derived/race_personal_records.csv"
+).with_columns(
+    pl.col("race_date").str.strptime(pl.Date, "%Y-%m-%d"),
+    pl.col("race_date_over_40").str.strptime(pl.Date, "%Y-%m-%d"),
+    format_duration("finish_duration_seconds").alias("finish_duration"),
+    format_duration("finish_duration_seconds_over_40").alias("finish_duration_over_40"),
+    format_pace("pace_seconds_per_mile").alias("pace_per_mile"),
+    format_pace("pace_seconds_per_mile_over_40").alias("pace_per_mile_over_40"),
+    format_duration("gap_seconds").alias("gap"),
+)
+```
+
+
+```{python}
+race_personal_records_table = race_personal_records.select(
+    [
+      "distance_category",
+        "race_date",
+        "race_name",
+        "finish_duration",
+        "pace_per_mile",
+        "race_date_over_40",
+        "race_name_over_40",
+        "finish_duration_over_40",
+        "pace_per_mile_over_40",
+        "gap",
+    ]
+)
+
+(
+    GT(race_personal_records_table)
+       .sub_missing(missing_text="")
+
+    .cols_label(
+      distance_category="Distance",
+        race_date="Race Date",
+        race_name="Race Name",
+        finish_duration="Finish Duration",
+        pace_per_mile="Pace",
+        race_date_over_40="Race Date",
+        race_name_over_40="Race Name",
+        finish_duration_over_40="Finish Duration",
+        pace_per_mile_over_40="Pace",
+        gap="Gap",
+    )
+    .tab_spanner(
+        label="All-Time PR",
+        columns=[
+            "race_date",
+            "race_name",
+            "finish_duration",
+            "pace_per_mile",
+        ],
+    )
+    .tab_spanner(
+        label="Over-40 PR",
+        columns=[
+            "race_date_over_40",
+            "race_name_over_40",
+            "finish_duration_over_40",
+            "pace_per_mile_over_40",
+        ],
+    )    .tab_style(
+        style=style.fill(color="#f2f2f2"),
+        locations=loc.body(
+            columns=[
+                "race_date_over_40",
+                "race_name_over_40",
+                "finish_duration_over_40",
+                "pace_per_mile_over_40",
+                "gap",
+            ],
+            rows=pl.col("race_date_over_40").is_null(),
+        ),
+    )
+)
+```
