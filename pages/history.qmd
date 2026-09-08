@@ -129,34 +129,6 @@ def pace_chart(data: pl.DataFrame, period: str):
     return add_age_40_marker(chart, period)
 ```
 
-## Year
-
-### Distance
-
-```{python}
-distance_chart(runs_by_year_df, "year")
-```
-
-### Pace
-
-```{python}
-pace_chart(runs_by_year_df, "year")
-```
-
-## Month
-
-### Distance
-
-```{python}
-distance_chart(runs_by_month_df, "month")
-```
-
-### Pace
-
-```{python}
-pace_chart(runs_by_month_df, "month")
-```
-
 ## Monthly Heatmaps
 
 ### Mileage by Calendar Month
@@ -201,7 +173,6 @@ heatmap_years = monthly_heatmap_df["year"].unique().sort().to_list()
         x="Year",
         y="Month",
         fill="Distance (mi)",
-        caption="Each cell shows total miles; blank cells fall outside the recorded range.",
     )
     + theme_classic()
     + theme(axis_ticks=element_blank())
@@ -238,9 +209,36 @@ heatmap_years = monthly_heatmap_df["year"].unique().sort().to_list()
         x="Year",
         y="Month",
         fill="Moving pace",
-        caption="Each cell shows aggregate moving pace; darker is faster.",
     )
     + theme_classic()
     + theme(axis_ticks=element_blank())
 )
+```
+
+## Year
+
+### Distance
+
+```{python}
+distance_chart(runs_by_year_df, "year")
+```
+
+### Pace
+
+```{python}
+pace_chart(runs_by_year_df, "year")
+```
+
+## Month
+
+### Distance
+
+```{python}
+distance_chart(runs_by_month_df, "month")
+```
+
+### Pace
+
+```{python}
+pace_chart(runs_by_month_df, "month")
 ```
