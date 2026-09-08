@@ -68,6 +68,11 @@ overview_df = runs_df.select(
     .filter(pl.col("start_region_code").is_not_null())
     .n_unique()
     .alias("region_count"),
+    pl.col("start_region_code")
+    .filter(pl.col("start_region_code").str.starts_with("US"))
+    .drop_nulls()
+    .n_unique()
+    .alias("us_state_count"),
     pl.col("start_country_code").drop_nulls().n_unique().alias("country_count"),
     (pl.col("start_country_code").is_not_null().mean() * 100).alias(
         "location_coverage_percent"
