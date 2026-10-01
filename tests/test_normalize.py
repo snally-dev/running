@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from running.normalize import (
+    NormalizationError,
     is_indoor_run,
     is_running_activity,
     normalize_run,
@@ -68,3 +69,48 @@ def test_export_values_are_normalized() -> None:
     assert record["start_datetime_utc"] == "2024-01-02T00:00:00Z"
     assert record["activity_date_local"] == "2024-01-01"
     assert "local_start_datetime" not in record
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"activity_id": 0}, "invalid activity ID"),
+        ({"activity_id": 1.5}, "invalid activity ID"),
+        ({"moving_time_s": 1601}, "moving time cannot exceed elapsed time"),
+        ({"calories": -1}, "calories must be non-negative"),
+        (
+            {"average_heart_rate_bpm": 181, "max_heart_rate_bpm": 180},
+            "average heart rate cannot exceed max heart rate",
+        ),
+    ],
+)
+def test_invalid_canonical_values_are_rejected(
+    changes: dict[str, object], message: str
+) -> None:
+    values: dict[str, object] = {
+        "activity_id": 123,
+        "start_datetime": datetime(2024, 1, 2, tzinfo=UTC),
+        "name": "Morning Run",
+        "distance_m": 5000,
+        "moving_time_s": 1500,
+        "elapsed_time_s": 1600,
+        "source": "test run",
+    }
+    values.update(changes)
+
+    with pytest.raises(NormalizationError, match=message):
+        normalize_run(**values)  # type: ignore[arg-type]
+
+
+def test_public_timestamp_is_always_rendered_in_utc() -> None:
+    run = normalize_run(
+        activity_id=123,
+        start_datetime=datetime(2024, 1, 2, 12, tzinfo=timezone(timedelta(hours=2))),
+        name="Morning Run",
+        distance_m=5000,
+        moving_time_s=1500,
+        elapsed_time_s=1600,
+        source="test run",
+    )
+
+    assert run_to_record(run)["start_datetime_utc"] == "2024-01-02T10:00:00Z"

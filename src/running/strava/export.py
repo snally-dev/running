@@ -21,6 +21,7 @@ from zipfile import BadZipFile, ZipFile
 import fitdecode
 
 from running.normalize import (
+    NormalizationError,
     Run,
     is_indoor_run,
     is_running_activity,
@@ -263,6 +264,10 @@ def load_export_directory(
 
         for row_number, row in enumerate(rows, start=2):
             activities_parsed += 1
+            if None in row:
+                raise StravaExportError(
+                    f"activities.csv row {row_number}: more values than columns"
+                )
             if not is_running_activity(row.get("Activity Type"), row.get("Type")):
                 continue
             raw_id = _optional_text(row.get("Activity ID"))
@@ -275,6 +280,10 @@ def load_export_directory(
             if activity_id is None:
                 raise StravaExportError(
                     f"activities.csv row {row_number}: Activity ID is missing"
+                )
+            if activity_id <= 0:
+                raise StravaExportError(
+                    f"activities.csv row {row_number}: invalid Activity ID {raw_id!r}"
                 )
             if is_indoor_run(row.get("Activity Name"), row.get("Type")):
                 indoor_run_ids.append(activity_id)
@@ -319,8 +328,8 @@ def load_export_directory(
                 )
 
             run_index = len(runs)
-            runs.append(
-                normalize_run(
+            try:
+                run = normalize_run(
                     activity_id=activity_id,
                     start_datetime=_parse_datetime(
                         row.get("Activity Date"), row_number
@@ -357,7 +366,9 @@ def load_export_directory(
                     ),
                     source=f"activities.csv row {row_number}",
                 )
-            )
+            except NormalizationError as error:
+                raise StravaExportError(str(error)) from error
+            runs.append(run)
             if filename is not None and load_tracks:
                 track_jobs.append((run_index, track_path))
 

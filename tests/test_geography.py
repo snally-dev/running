@@ -67,6 +67,11 @@ class FakeGeocoder:
         return self.location
 
 
+def test_negative_retry_count_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_retries must be non-negative"):
+        BigDataCloudGeocoder("test-api-key", max_retries=-1)
+
+
 def test_successful_city_state_and_country_mapping() -> None:
     location = parse_bigdatacloud_response(
         {
@@ -129,6 +134,31 @@ def test_missing_city_and_locality_remain_empty() -> None:
     assert (
         parse_bigdatacloud_response({"principalSubdivision": "Maryland"}).city is None
     )
+
+
+def test_malformed_optional_provider_metadata_is_ignored() -> None:
+    location = parse_bigdatacloud_response(
+        {
+            "city": "Frederick",
+            "localityInfo": {"informative": None},
+        }
+    )
+    assert location.city == "Frederick"
+    assert location.timezone is None
+
+
+def test_invalid_provider_timezone_is_ignored() -> None:
+    location = parse_bigdatacloud_response(
+        {
+            "localityInfo": {
+                "informative": [
+                    {"name": "not/a-timezone", "description": "time zone"},
+                    {"name": "America/New_York", "description": "time zone"},
+                ]
+            }
+        }
+    )
+    assert location.timezone == "America/New_York"
 
 
 def test_run_without_coordinates_needs_no_key(tmp_path: Path) -> None:
@@ -349,6 +379,34 @@ def test_malformed_json_fails_clearly() -> None:
     )
     with pytest.raises(GeocodingError, match="malformed JSON"):
         geocoder.reverse(38.1, -77.1)
+
+
+def test_invalid_coordinates_do_not_reach_provider() -> None:
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={})
+
+    geocoder = BigDataCloudGeocoder(
+        "test-api-key",
+        client=httpx.Client(transport=httpx.MockTransport(respond)),
+        max_retries=0,
+    )
+    with pytest.raises(GeocodingError, match="latitude or longitude is invalid"):
+        geocoder.reverse(float("nan"), -77.1)
+    assert calls == 0
+
+
+def test_invalid_cache_coordinates_fail_clearly(tmp_path: Path) -> None:
+    path = tmp_path / "cache.csv"
+    _cache(path)
+    text = path.read_text(encoding="utf-8").replace("38.123456", "nan")
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(GeocodingError, match="invalid private geocoding cache"):
+        GeocodingCache(path)
 
 
 def test_public_csv_is_deterministic_and_contains_no_secrets_or_coordinates(

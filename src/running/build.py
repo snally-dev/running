@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import csv
 import io
+import math
+import os
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -48,16 +51,44 @@ def validate_records(records: Iterable[dict[str, object]]) -> None:
 
     for record in records:
         label = f"activity {record['strava_activity_id']}"
+        numeric_values: dict[str, float] = {}
         for field in (
             "distance_miles",
             "moving_time_seconds",
             "elapsed_time_seconds",
             "elevation_gain_meters",
+            "average_heart_rate_bpm",
+            "max_heart_rate_bpm",
+            "calories_kcal",
             "strava_relative_effort",
         ):
             value = record[field]
-            if value is not None and float(value) < 0:
+            if value is None:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{label}: {field} must be numeric") from error
+            if not math.isfinite(number):
+                raise ValueError(f"{label}: {field} must be finite")
+            if number < 0:
                 raise ValueError(f"{label}: {field} must be non-negative")
+            numeric_values[field] = number
+        if (
+            numeric_values["moving_time_seconds"]
+            > numeric_values["elapsed_time_seconds"]
+        ):
+            raise ValueError(f"{label}: moving time cannot exceed elapsed time")
+        average_heart_rate = numeric_values.get("average_heart_rate_bpm")
+        max_heart_rate = numeric_values.get("max_heart_rate_bpm")
+        if (
+            average_heart_rate is not None
+            and max_heart_rate is not None
+            and average_heart_rate > max_heart_rate
+        ):
+            raise ValueError(
+                f"{label}: average heart rate cannot exceed max heart rate"
+            )
 
     order = [
         (record["start_datetime_utc"], record["strava_activity_id"])
@@ -95,6 +126,9 @@ def load_public_runs(path: Path = OUTPUT_PATH) -> list[Run]:
         return []
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
+        fieldnames = reader.fieldnames or []
+        if len(fieldnames) != len(set(fieldnames)):
+            raise ValueError("public CSV contains duplicate columns")
         # Public names have evolved; accept the previous schema while migration
         # rewrites it to the complete current schema.
         migration_columns = {
@@ -139,7 +173,13 @@ def load_public_runs(path: Path = OUTPUT_PATH) -> list[Run]:
             raise ValueError(
                 "public CSV is missing columns: " + ", ".join(sorted(missing))
             )
-        runs = [record_to_run(record) for record in reader]
+        runs = []
+        for row_number, record in enumerate(reader, start=2):
+            if None in record:
+                raise ValueError(
+                    f"public CSV row {row_number} contains more values than columns"
+                )
+            runs.append(record_to_run(record))
     return validate_runs(runs)
 
 
@@ -154,5 +194,18 @@ def write_runs(
     text = _csv_text(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not output_path.exists() or output_path.read_text(encoding="utf-8") != text:
-        output_path.write_text(text, encoding="utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                stream.write(text)
+            temporary.chmod(0o644)
+            temporary.replace(output_path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     return output_path, records

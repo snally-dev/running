@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import os
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -105,6 +108,28 @@ def _coordinate(value: float) -> float:
     return round(value, COORDINATE_DIGITS)
 
 
+def _validated_coordinates(latitude: float, longitude: float) -> tuple[float, float]:
+    if not (
+        math.isfinite(latitude)
+        and math.isfinite(longitude)
+        and -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    ):
+        raise GeocodingError("latitude or longitude is invalid")
+    return _coordinate(latitude), _coordinate(longitude)
+
+
+def _timezone(value: object) -> str | None:
+    timezone = _text(value)
+    if timezone is None:
+        return None
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        return None
+    return timezone
+
+
 def _same_coordinates(entry: CacheEntry, latitude: float, longitude: float) -> bool:
     return entry.latitude == _coordinate(latitude) and entry.longitude == _coordinate(
         longitude
@@ -117,18 +142,26 @@ def parse_bigdatacloud_response(payload: Mapping[str, Any]) -> Location:
     if country_code is not None:
         country_code = country_code.upper() if len(country_code) == 2 else None
     locality = _text(payload.get("locality"))
-    timezone = next(
-        (
-            _text(item.get("name"))
-            for item in payload.get("localityInfo", {}).get("informative", [])
-            if isinstance(item, dict) and item.get("description") == "time zone"
-        ),
-        None,
+    locality_info = payload.get("localityInfo")
+    informative = (
+        locality_info.get("informative", [])
+        if isinstance(locality_info, Mapping)
+        else []
     )
+    if not isinstance(informative, list):
+        informative = []
+    timezone = None
+    for item in informative:
+        if not isinstance(item, dict) or item.get("description") != "time zone":
+            continue
+        timezone = _timezone(item.get("name"))
+        if timezone is not None:
+            break
     return Location(
         # BigDataCloud explicitly recommends locality as the fallback for city.
         city=_text(payload.get("city")) or locality,
-        state=_text(payload.get("principalSubdivision")) or _text(payload.get("region")),
+        state=_text(payload.get("principalSubdivision"))
+        or _text(payload.get("region")),
         country=_text(payload.get("countryName")) or _text(payload.get("country")),
         country_code=country_code,
         locality=locality,
@@ -152,20 +185,23 @@ class BigDataCloudGeocoder:
     ) -> None:
         if not api_key:
             raise GeocodingError("BIGDATACLOUD_API_KEY is required")
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=20.0)
         self._sleep = sleep
         self._max_retries = max_retries
 
     def reverse(self, latitude: float, longitude: float) -> Location:
+        latitude, longitude = _validated_coordinates(latitude, longitude)
         attempt = 0
         while True:
             try:
                 response = self._client.get(
                     BIGDATACLOUD_URL,
                     params={
-                        "latitude": f"{_coordinate(latitude):.{COORDINATE_DIGITS}f}",
-                        "longitude": f"{_coordinate(longitude):.{COORDINATE_DIGITS}f}",
+                        "latitude": f"{latitude:.{COORDINATE_DIGITS}f}",
+                        "longitude": f"{longitude:.{COORDINATE_DIGITS}f}",
                         "localityLanguage": "en",
                     },
                     # A header prevents the key from appearing in URLs or errors.
@@ -225,20 +261,42 @@ class GeocodingCache:
         try:
             with self.path.open(encoding="utf-8", newline="") as stream:
                 reader = csv.DictReader(stream)
-                missing = REQUIRED_CACHE_COLUMNS - set(reader.fieldnames or ())
+                fieldnames = reader.fieldnames or []
+                if len(fieldnames) != len(set(fieldnames)):
+                    raise ValueError("duplicate cache columns")
+                missing = REQUIRED_CACHE_COLUMNS - set(fieldnames)
                 if missing:
                     raise ValueError("missing cache columns")
                 entries: dict[int, CacheEntry] = {}
                 for row in reader:
+                    if None in row:
+                        raise ValueError("cache row contains more values than columns")
                     if row["provider"] != PROVIDER:
                         continue
                     activity_id = int(row["activity_id"])
+                    if activity_id <= 0:
+                        raise ValueError("invalid cache activity ID")
                     if activity_id in entries:
                         raise ValueError("duplicate cache activity ID")
+                    latitude, longitude = _validated_coordinates(
+                        float(row["latitude"]), float(row["longitude"])
+                    )
+                    provider_payload = (
+                        json.loads(row["provider_payload_json"])
+                        if _text(row.get("provider_payload_json"))
+                        else None
+                    )
+                    if provider_payload is not None and not isinstance(
+                        provider_payload, dict
+                    ):
+                        raise ValueError("provider payload must be a JSON object")
+                    timezone = _text(row.get("timezone"))
+                    if timezone is not None and _timezone(timezone) is None:
+                        raise ValueError("invalid cached timezone")
                     entries[activity_id] = CacheEntry(
                         activity_id=activity_id,
-                        latitude=_coordinate(float(row["latitude"])),
-                        longitude=_coordinate(float(row["longitude"])),
+                        latitude=latitude,
+                        longitude=longitude,
                         location=Location(
                             city=_text(row["city"]),
                             state=_text(row["state"]),
@@ -249,16 +307,12 @@ class GeocodingCache:
                             state_code=_text(row.get("state_code")),
                             continent=_text(row.get("continent")),
                             continent_code=_text(row.get("continent_code")),
-                            timezone=_text(row.get("timezone")),
-                            provider_payload=(
-                                json.loads(row["provider_payload_json"])
-                                if _text(row.get("provider_payload_json"))
-                                else None
-                            ),
+                            timezone=timezone,
+                            provider_payload=provider_payload,
                         ),
                         geocoded_at=row["geocoded_at"],
                     )
-        except (OSError, KeyError, TypeError, ValueError) as error:
+        except (GeocodingError, OSError, KeyError, TypeError, ValueError) as error:
             raise GeocodingError(
                 f"invalid private geocoding cache at {self.path}"
             ) from error
@@ -296,10 +350,15 @@ class GeocodingCache:
         *,
         geocoded_at: str,
     ) -> None:
+        if activity_id <= 0:
+            raise GeocodingError("activity ID must be positive")
+        latitude, longitude = _validated_coordinates(latitude, longitude)
+        if location.timezone is not None and _timezone(location.timezone) is None:
+            raise GeocodingError("location timezone is invalid")
         self._entries[activity_id] = CacheEntry(
             activity_id=activity_id,
-            latitude=_coordinate(latitude),
-            longitude=_coordinate(longitude),
+            latitude=latitude,
+            longitude=longitude,
             location=location,
             geocoded_at=geocoded_at,
         )
@@ -342,8 +401,12 @@ class GeocodingCache:
                 }
             )
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=self.path.parent,
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(output.getvalue())
@@ -413,13 +476,15 @@ def enrich_runs(
                     )
             coordinates = sorted(targets)
             if coordinates:
-                with ThreadPoolExecutor(max_workers=min(8, len(coordinates))) as executor:
+                with ThreadPoolExecutor(
+                    max_workers=min(8, len(coordinates))
+                ) as executor:
                     locations = executor.map(
                         lambda point: active_geocoder.reverse(*point),  # type: ignore[union-attr]
                         coordinates,
                     )
-                    refreshed_at = now().isoformat(timespec="seconds").replace(
-                        "+00:00", "Z"
+                    refreshed_at = (
+                        now().isoformat(timespec="seconds").replace("+00:00", "Z")
                     )
                     for coordinate, location in zip(
                         coordinates, locations, strict=True

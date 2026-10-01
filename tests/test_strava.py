@@ -8,6 +8,7 @@ import pytest
 
 from running.strava import (
     METERS_PER_MILE,
+    StravaExportError,
     load_export_directory,
     load_runs,
     load_track_endpoints,
@@ -184,3 +185,24 @@ def test_gpx_endpoints_are_loaded(tmp_path: Path) -> None:
     start, end = load_track_endpoints(track)
     assert start is not None and (start.latitude, start.longitude) == (38.1, -77.1)
     assert end is not None and (end.latitude, end.longitude) == (38.2, -77.2)
+
+
+def test_extra_csv_values_are_rejected(tmp_path: Path) -> None:
+    row = _row(1)
+    row.append("unexpected")
+
+    with pytest.raises(StravaExportError, match="more values than columns"):
+        load_runs(_export(tmp_path, [row]))
+
+
+def test_normalization_errors_use_export_error_type(tmp_path: Path) -> None:
+    row = _row(1)
+    row[7] = "1900"
+
+    with pytest.raises(StravaExportError, match="moving time cannot exceed elapsed"):
+        load_runs(_export(tmp_path, [row]))
+
+
+def test_non_positive_indoor_activity_id_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(StravaExportError, match="invalid Activity ID"):
+        load_runs(_export(tmp_path, [_row(0, sport_type="VirtualRun")]))

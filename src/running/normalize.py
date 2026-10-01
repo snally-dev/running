@@ -175,15 +175,51 @@ def normalize_run(
     source: str,
 ) -> Run:
     """Validate source values and construct the shared canonical model."""
+    if isinstance(activity_id, bool):
+        raise NormalizationError(f"{source}: invalid activity ID")
     try:
         normalized_id = int(activity_id)  # type: ignore[arg-type]
     except (TypeError, ValueError) as error:
         raise NormalizationError(f"{source}: invalid activity ID") from error
+    if normalized_id <= 0 or (
+        not isinstance(activity_id, str) and activity_id != normalized_id
+    ):
+        raise NormalizationError(f"{source}: invalid activity ID")
     distance = _finite_float(distance_m, field="distance", source=source)
     moving = _whole_seconds(moving_time_s, field="moving time", source=source)
     elapsed = _whole_seconds(elapsed_time_s, field="elapsed time", source=source)
     if distance < 0 or moving < 0 or elapsed < 0:
         raise NormalizationError(f"{source}: distance and times must be non-negative")
+    if moving > elapsed:
+        raise NormalizationError(f"{source}: moving time cannot exceed elapsed time")
+    optional_measurements = {
+        "elevation gain": _optional_float(
+            elevation_gain_m, field="elevation gain", source=source
+        ),
+        "average heart rate": _optional_float(
+            average_heart_rate_bpm, field="average heart rate", source=source
+        ),
+        "max heart rate": _optional_float(
+            max_heart_rate_bpm, field="max heart rate", source=source
+        ),
+        "calories": _optional_float(calories, field="calories", source=source),
+        "relative effort": _optional_float(
+            relative_effort, field="relative effort", source=source
+        ),
+    }
+    for field, value in optional_measurements.items():
+        if value is not None and value < 0:
+            raise NormalizationError(f"{source}: {field} must be non-negative")
+    average_heart_rate = optional_measurements["average heart rate"]
+    max_heart_rate = optional_measurements["max heart rate"]
+    if (
+        average_heart_rate is not None
+        and max_heart_rate is not None
+        and average_heart_rate > max_heart_rate
+    ):
+        raise NormalizationError(
+            f"{source}: average heart rate cannot exceed max heart rate"
+        )
     normalized_start_lat = _coordinate(
         start_lat, minimum=-90, maximum=90, field="start latitude", source=source
     )
@@ -209,19 +245,11 @@ def normalize_run(
         distance_m=distance,
         moving_time_s=moving,
         elapsed_time_s=elapsed,
-        elevation_gain_m=_optional_float(
-            elevation_gain_m, field="elevation gain", source=source
-        ),
-        average_heart_rate_bpm=_optional_float(
-            average_heart_rate_bpm, field="average heart rate", source=source
-        ),
-        max_heart_rate_bpm=_optional_float(
-            max_heart_rate_bpm, field="max heart rate", source=source
-        ),
-        calories=_optional_float(calories, field="calories", source=source),
-        relative_effort=_optional_float(
-            relative_effort, field="relative effort", source=source
-        ),
+        elevation_gain_m=optional_measurements["elevation gain"],
+        average_heart_rate_bpm=average_heart_rate,
+        max_heart_rate_bpm=max_heart_rate,
+        calories=optional_measurements["calories"],
+        relative_effort=optional_measurements["relative effort"],
         sport_type=_optional_text(sport_type) or "Run",
         timezone=_timezone(timezone, source=source),
         start_lat=normalized_start_lat,
@@ -243,9 +271,14 @@ def _rounded(value: float | None, digits: int) -> float | None:
 
 def run_to_record(run: Run) -> dict[str, object]:
     """Render one canonical run as a deterministic public record."""
-    timestamp = run.start_datetime.isoformat(timespec="seconds").replace("+00:00", "Z")
+    start_datetime = _utc_datetime(
+        run.start_datetime,
+        field="start datetime",
+        source=f"activity {run.activity_id}",
+    )
+    timestamp = start_datetime.isoformat(timespec="seconds").replace("+00:00", "Z")
     local_start = (
-        run.start_datetime.astimezone(ZoneInfo(run.timezone))
+        start_datetime.astimezone(ZoneInfo(run.timezone))
         if run.timezone is not None
         else None
     )
@@ -324,9 +357,7 @@ def record_to_run(record: Mapping[str, object]) -> Run:
         start_city=record.get("start_city"),
         start_locality=record.get("start_locality"),
         start_state=_record_value(record, "start_region", "start_state"),
-        start_state_code=_record_value(
-            record, "start_region_code", "start_state_code"
-        ),
+        start_state_code=_record_value(record, "start_region_code", "start_state_code"),
         start_country=record.get("start_country"),
         start_country_code=record.get("start_country_code"),
         source=f"public CSV activity {activity_id!r}",

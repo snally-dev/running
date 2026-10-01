@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from running.build import validate_records
+from running.build import CSV_COLUMNS, load_public_runs, validate_records, write_runs
 from running.normalize import Run, record_to_run, run_to_record
 
 
@@ -90,3 +90,34 @@ def test_validation_rejects_negative_distance() -> None:
     record["distance_miles"] = -1
     with pytest.raises(ValueError, match="distance_miles must be non-negative"):
         validate_records([record])
+
+
+def test_validation_rejects_non_finite_and_inconsistent_measurements() -> None:
+    record = run_to_record(_run())
+    record["calories_kcal"] = float("nan")
+    with pytest.raises(ValueError, match="calories_kcal must be finite"):
+        validate_records([record])
+
+    record = run_to_record(_run())
+    record["moving_time_seconds"] = 1601
+    with pytest.raises(ValueError, match="moving time cannot exceed elapsed time"):
+        validate_records([record])
+
+
+def test_public_csv_rejects_extra_values(tmp_path) -> None:
+    path = tmp_path / "runs.csv"
+    write_runs([_run()], output_path=path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[1] += ",unexpected"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="more values than columns"):
+        load_public_runs(path)
+
+
+def test_public_csv_rejects_duplicate_columns(tmp_path) -> None:
+    path = tmp_path / "runs.csv"
+    path.write_text(",".join((*CSV_COLUMNS, CSV_COLUMNS[-1])) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate columns"):
+        load_public_runs(path)
