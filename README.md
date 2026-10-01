@@ -119,8 +119,9 @@ combined run. This prevents short runs from receiving the same weight as long
 runs. Zero-distance activities have no pace and are excluded from that metric.
 
 The Strava ZIP files and private geocoding cache are intentionally ignored by
-Git. Commit only the regenerated public CSV and application changes. GitHub
-Actions validates committed data and code; it does not contact Strava or download
+Git. Commit only the regenerated public CSV and application changes. On pushes to
+`main`, GitHub Actions validates the committed data and code, generates the
+analysis tables, and publishes the website. It does not contact Strava or download
 exports.
 
 Run local checks with:
@@ -128,4 +129,7 @@ Run local checks with:
 ```console
 uv run pytest
 uv run ruff check .
+uv run python scripts/run_metrics.py
+uv run python scripts/race_metrics.py
+uv run quarto render
 ```
