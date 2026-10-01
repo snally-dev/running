@@ -1,16 +1,23 @@
 name: Publish to GitHub Pages
 
 on:
+  # push:
+  #   branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: quarto-dev/quarto-actions/setup@v2
       - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
@@ -18,3 +25,27 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest
       - run: uv run ruff check .
+      - name: Generate analysis tables
+        run: |
+          uv run python scripts/run_metrics.py
+          uv run python scripts/race_metrics.py
+      - name: Render site
+        run: uv run quarto render
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
